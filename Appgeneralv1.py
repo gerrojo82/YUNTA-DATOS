@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from io import BytesIO
 import duckdb
 from pathlib import Path
+import requests
+import json
 
 # ============================================================================
 # CONFIGURACIÓN
@@ -15,6 +17,53 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# ============================================================================
+# CARGAR DATOS DESDE GOOGLE DRIVE
+# ============================================================================
+@st.cache_data(ttl=3600)  # Cache por 1 hora
+def cargar_parquet_desde_drive(file_id):
+    """Descarga un archivo parquet desde Google Drive"""
+    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    
+    # Para archivos grandes, Google pide confirmación
+    session = requests.Session()
+    response = session.get(url, stream=True)
+    
+    # Si el archivo es grande, buscar el token de confirmación
+    for key, value in response.cookies.items():
+        if key.startswith('download_warning'):
+            url = f"https://drive.google.com/uc?export=download&confirm={value}&id={file_id}"
+            response = session.get(url, stream=True)
+            break
+    
+    # Leer como parquet
+    content = BytesIO(response.content)
+    df = pd.read_parquet(content)
+    return df
+
+# IDs de los archivos en Google Drive
+CONSOLIDADO_ID = "1UPEGAtLPslu9nmcZjJc3UjmyWWKtiS9A"
+MOVIMIENTOS_ID = "1Zca2c0NAYbiKWXVEozcCV0gu8_4UrLvl"
+
+def cargar_datos():
+    """Carga los datos desde Google Drive o local según disponibilidad"""
+    
+    # Rutas locales
+    ruta_consolidado_local = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\pages\CONSOLIDADO_COMPLETO.parquet")
+    ruta_movimientos_local = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\MOVIMIENTOS_STOCK_PowerBI.parquet")
+    
+    # Intentar cargar local primero (más rápido para desarrollo)
+    if ruta_consolidado_local.exists() and ruta_movimientos_local.exists():
+        df_consolidado = pd.read_parquet(ruta_consolidado_local)
+        df_movimientos = pd.read_parquet(ruta_movimientos_local)
+    else:
+        # Cargar desde Google Drive (para Streamlit Cloud)
+        with st.spinner("📥 Cargando datos desde la nube..."):
+            df_consolidado = cargar_parquet_desde_drive(CONSOLIDADO_ID)
+            df_movimientos = cargar_parquet_desde_drive(MOVIMIENTOS_ID)
+    
+    return df_consolidado, df_movimientos
 
 # ============================================================================
 # 🔐 MÓDULO DE LOGIN - Agregar al INICIO de Appgeneralv1.py

@@ -625,18 +625,40 @@ def to_excel(df):
     return output
 
 # ==========================================================================
-# DUCKDB
+# CARGAR DATOS (Local o Google Drive)
 # ==========================================================================
-BASE_DIR = Path(__file__).resolve().parent
-PARQUET_PATH = str(BASE_DIR / "MOVIMIENTOS_STOCK_PowerBI.parquet")
+import tempfile
 
-# Validación de archivo parquet (LFS / existencia)
-parquet_file = Path(PARQUET_PATH)
-if not parquet_file.exists():
-    st.error("❌ No se encontró el archivo MOVIMIENTOS_STOCK_PowerBI.parquet en el repo")
-    st.stop()
-if parquet_file.stat().st_size < 1024:
-    st.error("❌ El archivo parquet parece ser un puntero LFS (no descargado). Revisa LFS en Streamlit Cloud.")
+BASE_DIR = Path(__file__).resolve().parent
+
+# Rutas locales (solo funcionan en tu PC)
+PARQUET_PATH_LOCAL = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\MOVIMIENTOS_STOCK_PowerBI.parquet")
+PARQUET_PATH_REPO = BASE_DIR / "MOVIMIENTOS_STOCK_PowerBI.parquet"
+
+# Determinar origen de datos
+PARQUET_PATH = None
+
+if PARQUET_PATH_LOCAL.exists():
+    # LOCAL: usar archivo directo (tu PC)
+    PARQUET_PATH = str(PARQUET_PATH_LOCAL)
+elif PARQUET_PATH_REPO.exists() and PARQUET_PATH_REPO.stat().st_size > 1024:
+    # REPO: archivo en el repositorio
+    PARQUET_PATH = str(PARQUET_PATH_REPO)
+else:
+    # NUBE: descargar de Google Drive
+    try:
+        with st.spinner("📥 Descargando datos desde Google Drive..."):
+            df_movimientos_drive = cargar_parquet_desde_drive(MOVIMIENTOS_ID)
+            # Guardar temporalmente para DuckDB
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.parquet')
+            df_movimientos_drive.to_parquet(temp_file.name)
+            PARQUET_PATH = temp_file.name
+    except Exception as e:
+        st.error(f"❌ Error al descargar de Google Drive: {e}")
+        st.stop()
+
+if PARQUET_PATH is None:
+    st.error("❌ No se pudo cargar el archivo de datos")
     st.stop()
 
 @st.cache_resource

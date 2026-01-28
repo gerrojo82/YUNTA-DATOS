@@ -3,10 +3,19 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, date
 from io import BytesIO
+from pathlib import Path
+import requests
+
+# ============================================================================
+# VERIFICAR LOGIN
+# ============================================================================
+if "logged_in" not in st.session_state or not st.session_state.logged_in:
+    st.warning("⚠️ Tenés que iniciar sesión primero")
+    st.stop()
 
 # Tema toggle - Inicialización
 if 'dark_mode' not in st.session_state:
-    st.session_state.dark_mode = True  # Empieza en dark por default
+    st.session_state.dark_mode = True
 
 # ============================================================================
 # CONFIGURACIÓN
@@ -62,6 +71,65 @@ def to_excel(df):
     return output
 
 # ============================================================================
+# CARGAR DATOS DESDE GOOGLE DRIVE
+# ============================================================================
+CONSOLIDADO_ID = "1UPEGAtLPslu9nmcZjJc3UjmyWWKtiS9A"
+
+@st.cache_data(ttl=3600)
+def cargar_parquet_desde_drive(file_id):
+    """Descarga un archivo parquet desde Google Drive"""
+    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    session = requests.Session()
+    response = session.get(url, stream=True)
+    
+    for key, value in response.cookies.items():
+        if key.startswith('download_warning'):
+            url = f"https://drive.google.com/uc?export=download&confirm={value}&id={file_id}"
+            response = session.get(url, stream=True)
+            break
+    
+    content = BytesIO(response.content)
+    df = pd.read_parquet(content)
+    return df
+
+@st.cache_data(ttl=3600)
+def load_data():
+    """Carga datos desde local o Google Drive"""
+    ruta_local = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\pages\CONSOLIDADO_COMPLETO.parquet")
+    
+    try:
+        if ruta_local.exists():
+            # LOCAL: cargar desde archivo
+            df = pd.read_parquet(ruta_local)
+        else:
+            # NUBE: descargar de Google Drive
+            df = cargar_parquet_desde_drive(CONSOLIDADO_ID)
+        
+        # Procesar fechas
+        date_cols = ['Fecha_Pedido', 'Fecha_Recepcion', 'Fecha_Recepcion_Proveedor',
+                     'Fecha_Primera_Transferencia', 'Fecha_Ultima_Transferencia']
+        for col in date_cols:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+        
+        # Procesar numéricos
+        numeric_cols = ['Cantidad_Solicitada', 'Cantidad_Transferida_Entrada', 'Cantidad_Reasignada',
+                        'Precio_Unitario', 'Precio_Real', 'Costo_Unitario_Transferencia',
+                        'Precio_Total_Solicitado', 'Precio_Total_Transferido', 'Diferencia_Precio_Total']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        if 'Diferencia_Precio_Total' in df.columns:
+            if df['Diferencia_Precio_Total'].dtype == 'object':
+                df['Diferencia_Precio_Total'] = df['Diferencia_Precio_Total'].apply(clean_currency_to_float)
+        
+        return df
+    except Exception as e:
+        st.error(f"Error al cargar datos: {e}")
+        return pd.DataFrame()
+
+# ============================================================================
 # ESTILOS CSS - Light / Dark (MAGENTA THEME)
 # ============================================================================
 dark_css = """<style>
@@ -98,23 +166,19 @@ dark_css = """<style>
     .metric-label { color: #e879f9 !important; font-size: 0.85rem !important; font-weight: 600 !important; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem; }
     .metric-value { font-size: clamp(1.6rem, 4vw, 2.4rem) !important; font-weight: 800 !important; color: #ffffff !important; line-height: 1.1 !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; max-width: 100% !important; }
 
-    /* FIX KPIs en una sola línea */
     .row-widget.stHorizontal { flex-wrap: nowrap !important; overflow-x: auto !important; gap: 1.2rem !important; padding-bottom: 0.6rem !important; }
     [data-testid="column"] > div { min-width: 240px !important; flex-shrink: 0 !important; }
 
-    /* Tablas */
     .stDataFrame { background: #252542 !important; border-radius: 12px !important; overflow: hidden; border: 1px solid #3f3f5a !important; }
     .stDataFrame [data-testid="stDataFrameResizable"] { background: #252542 !important; }
     .dataframe thead th { background: #1a1a2e !important; color: #e879f9 !important; font-weight: 600 !important; border-bottom: 2px solid #3f3f5a !important; }
     .dataframe tbody tr:hover { background: #2e2e4a !important; }
     .dataframe tbody td { color: #e2e8f0 !important; }
 
-    /* Sidebar */
     [data-testid="stSidebar"] { background: #1a1a2e !important; border-right: 1px solid #3f3f5a !important; }
     [data-testid="stSidebar"] * { color: #e2e8f0 !important; }
     [data-testid="stSidebar"] .stMarkdown h1, [data-testid="stSidebar"] .stMarkdown h2, [data-testid="stSidebar"] .stMarkdown h3 { color: #e879f9 !important; }
     
-    /* Botones */
     button[kind="primary"], .stButton > button, .stDownloadButton button { 
         background: linear-gradient(135deg, #c026d3, #e879f9) !important; 
         color: white !important;
@@ -129,56 +193,34 @@ dark_css = """<style>
         box-shadow: 0 8px 24px rgba(232,121,249,0.45) !important; 
     }
     
-    /* Inputs, selectbox, multiselect */
     .stSelectbox > div > div { background: #252542 !important; border-color: #3f3f5a !important; color: #e2e8f0 !important; }
     .stMultiSelect > div > div { background: #252542 !important; border-color: #3f3f5a !important; color: #e2e8f0 !important; }
     .stTextInput > div > div > input { background: #252542 !important; border-color: #3f3f5a !important; color: #e2e8f0 !important; border-radius: 10px !important; }
     .stNumberInput > div > div > input { background: #252542 !important; border-color: #3f3f5a !important; color: #e2e8f0 !important; }
     .stDateInput > div > div > input { background: #252542 !important; border-color: #3f3f5a !important; color: #e2e8f0 !important; }
     
-    /* Labels de inputs */
     .stSelectbox label, .stMultiSelect label, .stTextInput label, .stNumberInput label, .stDateInput label {
         color: #c4b5fd !important;
         font-weight: 500 !important;
     }
     
-    /* Placeholders */
     ::placeholder { color: #6b7280 !important; opacity: 1 !important; }
     
-    /* Radio buttons */
     .stRadio > div { color: #e2e8f0 !important; }
     .stRadio label { color: #e2e8f0 !important; }
     
-    /* Markdown text */
     .stMarkdown p, .stMarkdown li { color: #e2e8f0 !important; }
     .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 { color: #e879f9 !important; }
     
-    /* Info boxes */
     .stAlert { border-radius: 8px !important; }
 
     hr { background: linear-gradient(90deg, transparent, #3f3f5a, transparent) !important; height: 1px !important; border: none !important; margin: 2.5rem 0 !important; }
 
-    /* Scrollbar oscuro */
-    ::-webkit-scrollbar {
-        width: 10px;
-        height: 10px;
-    }
-    ::-webkit-scrollbar-track {
-        background: #1a1a2e;
-        border-radius: 5px;
-    }
-    ::-webkit-scrollbar-thumb {
-        background: #e879f9;
-        border-radius: 5px;
-    }
-    ::-webkit-scrollbar-thumb:hover {
-        background: #c026d3;
-    }
-    
-    /* Scrollbar en tablas */
-    .stDataFrame ::-webkit-scrollbar-track {
-        background: #252542;
-    }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: #1a1a2e; border-radius: 5px; }
+    ::-webkit-scrollbar-thumb { background: #e879f9; border-radius: 5px; }
+    ::-webkit-scrollbar-thumb:hover { background: #c026d3; }
+    .stDataFrame ::-webkit-scrollbar-track { background: #252542; }
 </style>"""
 
 light_css = """<style>
@@ -215,23 +257,19 @@ light_css = """<style>
     .metric-label { color: #be185d !important; font-size: 0.85rem !important; font-weight: 600 !important; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem; }
     .metric-value { font-size: clamp(1.6rem, 4vw, 2.4rem) !important; font-weight: 800 !important; color: #1f2937 !important; line-height: 1.1 !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; max-width: 100% !important; }
 
-    /* FIX KPIs en una sola línea */
     .row-widget.stHorizontal { flex-wrap: nowrap !important; overflow-x: auto !important; gap: 1.2rem !important; padding-bottom: 0.6rem !important; }
     [data-testid="column"] > div { min-width: 240px !important; flex-shrink: 0 !important; }
 
-    /* Tablas */
     .stDataFrame { background: white !important; border-radius: 12px !important; overflow: hidden; border: 1px solid #e5e7eb !important; }
     .stDataFrame [data-testid="stDataFrameResizable"] { background: white !important; }
     .dataframe thead th { background: #fdf2f8 !important; color: #be185d !important; font-weight: 600 !important; }
     .dataframe tbody tr:hover { background: #fdf2f8 !important; }
     .dataframe tbody td { color: #1f2937 !important; }
 
-    /* Sidebar */
     [data-testid="stSidebar"] { background: #ffffff !important; border-right: 1px solid #e5e7eb !important; }
     [data-testid="stSidebar"] * { color: #1f2937 !important; }
     [data-testid="stSidebar"] .stMarkdown h1, [data-testid="stSidebar"] .stMarkdown h2, [data-testid="stSidebar"] .stMarkdown h3 { color: #be185d !important; }
     
-    /* Botones */
     button[kind="primary"], .stButton > button, .stDownloadButton button { 
         background: linear-gradient(135deg, #be185d, #ec4899) !important; 
         color: white !important;
@@ -246,56 +284,34 @@ light_css = """<style>
         box-shadow: 0 8px 24px rgba(190,24,93,0.35) !important; 
     }
     
-    /* Inputs, selectbox, multiselect */
     .stSelectbox > div > div { background: white !important; border-color: #d1d5db !important; color: #1f2937 !important; }
     .stMultiSelect > div > div { background: white !important; border-color: #d1d5db !important; color: #1f2937 !important; }
     .stTextInput > div > div > input { background: white !important; border-color: #d1d5db !important; color: #1f2937 !important; border-radius: 10px !important; }
     .stNumberInput > div > div > input { background: white !important; border-color: #d1d5db !important; color: #1f2937 !important; }
     .stDateInput > div > div > input { background: white !important; border-color: #d1d5db !important; color: #1f2937 !important; }
     
-    /* Labels de inputs */
     .stSelectbox label, .stMultiSelect label, .stTextInput label, .stNumberInput label, .stDateInput label {
         color: #4b5563 !important;
         font-weight: 500 !important;
     }
     
-    /* Placeholders */
     ::placeholder { color: #9ca3af !important; opacity: 1 !important; }
     
-    /* Radio buttons */
     .stRadio > div { color: #1f2937 !important; }
     .stRadio label { color: #1f2937 !important; }
     
-    /* Markdown text */
     .stMarkdown p, .stMarkdown li { color: #1f2937 !important; }
     .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 { color: #be185d !important; }
     
-    /* Info boxes */
     .stAlert { border-radius: 8px !important; }
 
     hr { background: linear-gradient(90deg, transparent, #e5e7eb, transparent) !important; height: 1px !important; border: none !important; margin: 2.5rem 0 !important; }
 
-    /* Scrollbar claro */
-    ::-webkit-scrollbar {
-        width: 10px;
-        height: 10px;
-    }
-    ::-webkit-scrollbar-track {
-        background: #f1f5f9;
-        border-radius: 5px;
-    }
-    ::-webkit-scrollbar-thumb {
-        background: #be185d;
-        border-radius: 5px;
-    }
-    ::-webkit-scrollbar-thumb:hover {
-        background: #9d174d;
-    }
-    
-    /* Scrollbar en tablas */
-    .stDataFrame ::-webkit-scrollbar-track {
-        background: #fdf2f8;
-    }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 5px; }
+    ::-webkit-scrollbar-thumb { background: #be185d; border-radius: 5px; }
+    ::-webkit-scrollbar-thumb:hover { background: #9d174d; }
+    .stDataFrame ::-webkit-scrollbar-track { background: #fdf2f8; }
 </style>"""
 
 # Aplicar CSS según modo
@@ -307,30 +323,6 @@ else:
 # ============================================================================
 # CARGAR DATOS
 # ============================================================================
-@st.cache_data
-def load_data():
-    ruta = r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\pages\CONSOLIDADO_COMPLETO.parquet"
-    try:
-        df = pd.read_parquet(ruta)
-        date_cols = ['Fecha_Pedido', 'Fecha_Recepcion', 'Fecha_Recepcion_Proveedor',
-                     'Fecha_Primera_Transferencia', 'Fecha_Ultima_Transferencia']
-        for col in date_cols:
-            if col in df.columns:
-                df[col] = pd.to_datetime(df[col], errors='coerce')
-        numeric_cols = ['Cantidad_Solicitada', 'Cantidad_Transferida_Entrada', 'Cantidad_Reasignada',
-                        'Precio_Unitario', 'Precio_Real', 'Costo_Unitario_Transferencia',
-                        'Precio_Total_Solicitado', 'Precio_Total_Transferido', 'Diferencia_Precio_Total']
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        if 'Diferencia_Precio_Total' in df.columns:
-            if df['Diferencia_Precio_Total'].dtype == 'object':
-                df['Diferencia_Precio_Total'] = df['Diferencia_Precio_Total'].apply(clean_currency_to_float)
-        return df
-    except Exception as e:
-        st.error(f"Error al cargar datos: {e}")
-        return pd.DataFrame()
-
 df = load_data()
 if df.empty:
     st.error("❌ No se pudo cargar el archivo parquet")
@@ -412,7 +404,6 @@ busqueda = st.sidebar.text_input("SKU o Descripción", "")
 # ============================================================================
 df_f = df.copy()
 
-# Filtro de fecha
 if 'Fecha_Pedido' in df_f.columns:
     if tipo_fecha == "Fecha Pedido":
         df_f = df_f[(df_f['Fecha_Pedido'].dt.date >= fecha_desde) & (df_f['Fecha_Pedido'].dt.date <= fecha_hasta)]
@@ -478,7 +469,6 @@ df_f['Porcentaje_Cumplimiento_Transferencia'] = np.where(
 # ============================================================================
 st.markdown("### 📊 KPIs Principales")
 
-# Preparación de columnas auxiliares
 if 'Cantidad_Reasignada' in df_f.columns and 'Cantidad_Transferida_Entrada' in df_f.columns:
     df_f['Dif_Unidades'] = df_f['Cantidad_Reasignada'].fillna(0) - df_f['Cantidad_Transferida_Entrada'].fillna(0)
 else:
@@ -489,7 +479,6 @@ if 'Costo_Unitario_Transferencia' in df_f.columns:
 else:
     df_f['Dif_Unidades_Valorizada'] = 0
 
-# Fila 1
 col1, col2, col3 = st.columns(3)
 
 total_transferido = (df_f['Cantidad_Transferida_Entrada'].fillna(0) * df_f['Costo_Unitario_Transferencia'].fillna(0)).sum()
@@ -513,7 +502,6 @@ col3.markdown(
     unsafe_allow_html=True
 )
 
-# Fila 2
 col4, col5, col6 = st.columns(3)
 
 dif_unidades_val = df_f['Dif_Unidades_Valorizada'].sum()
@@ -565,13 +553,11 @@ orden_deseado = [
 cols_existentes = [col for col in orden_deseado if col in df_f.columns]
 df_show = df_f[cols_existentes].copy()
 
-# DIF. EN UNIDADES
 if 'Cantidad_Reasignada' in df_show.columns and 'Cantidad_Transferida_Entrada' in df_show.columns:
     if 'DIF. EN UNIDADES' not in df_show.columns:
         df_show['DIF. EN UNIDADES'] = df_show['Cantidad_Reasignada'].fillna(0) - df_show['Cantidad_Transferida_Entrada'].fillna(0)
         df_show['DIF. EN UNIDADES'] = df_show['DIF. EN UNIDADES'].apply(lambda x: format_number(x) if x != 0 else "0")
 
-# Dif. Unidades Valorizada
 if 'DIF. EN UNIDADES' in df_show.columns and 'Costo_Unitario_Transferencia' in df_show.columns:
     if 'Dif. Unidades Valorizada' not in df_show.columns:
         df_show['Dif_Unidades_Num'] = pd.to_numeric(
@@ -582,7 +568,6 @@ if 'DIF. EN UNIDADES' in df_show.columns and 'Costo_Unitario_Transferencia' in d
         df_show['Dif. Unidades Valorizada'] = df_show['Dif. Unidades Valorizada'].apply(format_currency)
         df_show = df_show.drop(columns=['Dif_Unidades_Num'])
 
-# Dif. Precios (solo líneas dif.)
 if all(col in df_show.columns for col in ['Precio_Unitario', 'Costo_Unitario_Transferencia', 'Cantidad_Reasignada']):
     if 'Dif. Precios (solo líneas dif.)' not in df_show.columns:
         df_show['Dif. Precios (solo líneas dif.)'] = 0.0
@@ -593,7 +578,6 @@ if all(col in df_show.columns for col in ['Precio_Unitario', 'Costo_Unitario_Tra
         )
         df_show['Dif. Precios (solo líneas dif.)'] = df_show['Dif. Precios (solo líneas dif.)'].apply(format_currency)
 
-# Formateo final
 money_cols = ['Precio_Unitario', 'Costo_Unitario_Transferencia', 'Precio_Total_Solicitado', 'Precio_Total_Transferido', 'Diferencia_Precio_Total']
 for col in money_cols:
     if col in df_show.columns:

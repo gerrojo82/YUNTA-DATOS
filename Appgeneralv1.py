@@ -19,16 +19,17 @@ st.set_page_config(
 )
 
 # ============================================================================
-# CARGAR DATOS DESDE HUGGING FACE (reemplaza Google Drive)
+# CARGAR DATOS DESDE HUGGING FACE (versión final, sin Google Drive)
 # ============================================================================
 from datasets import load_dataset
+from pathlib import Path  # solo si lo usas en otro lado, puedes quitarlo si no
 
 @st.cache_data(ttl=86400, show_spinner="📥 Cargando datos completos desde Hugging Face... (rápido y sin límites)")
 def cargar_datos():
-    """Carga los datos consolidados y movimientos desde Hugging Face"""
+    """Carga los datos consolidados y movimientos directamente desde Hugging Face"""
     try:
         df_consolidado = load_dataset(
-            "gerrojo82/yunta-dashboad-datos",   # tu repo exacto
+            "gerrojo82/yunta-dashboad-datos",
             "consolidado",
             split="train"
         ).to_pandas()
@@ -44,25 +45,9 @@ def cargar_datos():
 
     except Exception as e:
         st.error(f"Error al cargar desde Hugging Face: {str(e)}")
-        st.info("Verifica que el repo sea público o que tu token esté configurado si es privado.")
+        if "authentication" in str(e).lower() or "private" in str(e).lower():
+            st.info("El dataset es privado. Agrega tu token en Secrets de Streamlit Cloud o hazlo público temporalmente.")
         raise e
-    """Carga los datos desde Google Drive o local según disponibilidad"""
-    
-    # Rutas locales
-    ruta_consolidado_local = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\pages\CONSOLIDADO_COMPLETO.parquet")
-    ruta_movimientos_local = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\MOVIMIENTOS_STOCK_PowerBI.parquet")
-    
-    # Intentar cargar local primero (más rápido para desarrollo)
-    if ruta_consolidado_local.exists() and ruta_movimientos_local.exists():
-        df_consolidado = pd.read_parquet(ruta_consolidado_local)
-        df_movimientos = pd.read_parquet(ruta_movimientos_local)
-    else:
-        # Cargar desde Google Drive (para Streamlit Cloud)
-        with st.spinner("📥 Cargando datos desde la nube..."):
-            df_consolidado = cargar_parquet_desde_drive(CONSOLIDADO_ID)
-            df_movimientos = cargar_parquet_desde_drive(MOVIMIENTOS_ID)
-    
-    return df_consolidado, df_movimientos
 # ============================================================================
 # 🔐 MÓDULO DE LOGIN - Agregar al INICIO de Appgeneralv1.py
 # ============================================================================

@@ -21,26 +21,51 @@ st.set_page_config(
 # ============================================================================
 # CARGAR DATOS DESDE GOOGLE DRIVE
 # ============================================================================
-@st.cache_data(ttl=3600)  # Cache por 1 hora
+@st.cache_data(ttl=3600)
 def cargar_parquet_desde_drive(file_id):
-    """Descarga un archivo parquet desde Google Drive"""
-    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    """Descarga un archivo parquet desde Google Drive (incluso archivos grandes)"""
     
-    # Para archivos grandes, Google pide confirmación
+    def get_confirm_token(response):
+        for key, value in response.cookies.items():
+            if key.startswith('download_warning'):
+                return value
+        return None
+
+    def save_response_content(response):
+        content = BytesIO()
+        for chunk in response.iter_content(chunk_size=32768):
+            if chunk:
+                content.write(chunk)
+        content.seek(0)
+        return content
+
+    URL = "https://drive.google.com/uc?export=download"
+    
     session = requests.Session()
-    response = session.get(url, stream=True)
+    response = session.get(URL, params={'id': file_id}, stream=True)
+    token = get_confirm_token(response)
+
+    if token:
+        params = {'id': file_id, 'confirm': token}
+        response = session.get(URL, params=params, stream=True)
+
+    content = save_response_content(response)
     
-    # Si el archivo es grande, buscar el token de confirmación
-    for key, value in response.cookies.items():
-        if key.startswith('download_warning'):
-            url = f"https://drive.google.com/uc?export=download&confirm={value}&id={file_id}"
-            response = session.get(url, stream=True)
-            break
-    
-    # Leer como parquet
-    content = BytesIO(response.content)
-    df = pd.read_parquet(content)
-    return df
+    # Verificar que sea un parquet válido
+    try:
+        df = pd.read_parquet(content)
+        return df
+    except Exception as e:
+        # Si falla, intentar con método alternativo usando gdown
+        try:
+            import gdown
+            url = f"https://drive.google.com/uc?id={file_id}"
+            output = "/tmp/temp_file.parquet"
+            gdown.download(url, output, quiet=False)
+            df = pd.read_parquet(output)
+            return df
+        except:
+            raise Exception(f"No se pudo descargar el archivo: {e}")
 
 # IDs de los archivos en Google Drive
 CONSOLIDADO_ID = "1UPEGAtLPslu9nmcZjJc3UjmyWWKtiS9A"
@@ -64,7 +89,6 @@ def cargar_datos():
             df_movimientos = cargar_parquet_desde_drive(MOVIMIENTOS_ID)
     
     return df_consolidado, df_movimientos
-
 # ============================================================================
 # 🔐 MÓDULO DE LOGIN - Agregar al INICIO de Appgeneralv1.py
 # ============================================================================

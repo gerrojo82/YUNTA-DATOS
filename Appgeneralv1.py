@@ -4843,3 +4843,4 @@ st.markdown(f"""
     YUNTA Intelligence v2.3 - {datetime.now().strftime('%d/%m/%Y %H:%M')} | {len(df_filtrado):,} registros de ventas cargados
 </div>
 """, unsafe_allow_html=True)
+st.write("ESTO ES UNA PRUEBA - SI VES ESTO EN LA APP, LOS CAMBIOS LLEGARON - 2026")

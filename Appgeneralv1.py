@@ -19,59 +19,33 @@ st.set_page_config(
 )
 
 # ============================================================================
-# CARGAR DATOS DESDE GOOGLE DRIVE
+# CARGAR DATOS DESDE HUGGING FACE (reemplaza Google Drive)
 # ============================================================================
-@st.cache_data(ttl=3600)
-def cargar_parquet_desde_drive(file_id):
-    """Descarga un archivo parquet desde Google Drive (incluso archivos grandes)"""
-    
-    def get_confirm_token(response):
-        for key, value in response.cookies.items():
-            if key.startswith('download_warning'):
-                return value
-        return None
+from datasets import load_dataset
 
-    def save_response_content(response):
-        content = BytesIO()
-        for chunk in response.iter_content(chunk_size=32768):
-            if chunk:
-                content.write(chunk)
-        content.seek(0)
-        return content
-
-    URL = "https://drive.google.com/uc?export=download"
-    
-    session = requests.Session()
-    response = session.get(URL, params={'id': file_id}, stream=True)
-    token = get_confirm_token(response)
-
-    if token:
-        params = {'id': file_id, 'confirm': token}
-        response = session.get(URL, params=params, stream=True)
-
-    content = save_response_content(response)
-    
-    # Verificar que sea un parquet válido
-    try:
-        df = pd.read_parquet(content)
-        return df
-    except Exception as e:
-        # Si falla, intentar con método alternativo usando gdown
-        try:
-            import gdown
-            url = f"https://drive.google.com/uc?id={file_id}"
-            output = "/tmp/temp_file.parquet"
-            gdown.download(url, output, quiet=False)
-            df = pd.read_parquet(output)
-            return df
-        except:
-            raise Exception(f"No se pudo descargar el archivo: {e}")
-
-# IDs de los archivos en Google Drive
-CONSOLIDADO_ID = "1UPEGAtLPslu9nmcZjJc3UjmyWWKtiS9A"
-MOVIMIENTOS_ID = "1Zca2c0NAYbiKWXVEozcCV0gu8_4UrLvl"
-
+@st.cache_data(ttl=86400, show_spinner="📥 Cargando datos completos desde Hugging Face... (rápido y sin límites)")
 def cargar_datos():
+    """Carga los datos consolidados y movimientos desde Hugging Face"""
+    try:
+        df_consolidado = load_dataset(
+            "gerrojo82/yunta-dashboad-datos",   # tu repo exacto
+            "consolidado",
+            split="train"
+        ).to_pandas()
+
+        df_movimientos = load_dataset(
+            "gerrojo82/yunta-dashboad-datos",
+            "movimientos",
+            split="train"
+        ).to_pandas()
+
+        st.success("Datos cargados exitosamente desde Hugging Face!")
+        return df_consolidado, df_movimientos
+
+    except Exception as e:
+        st.error(f"Error al cargar desde Hugging Face: {str(e)}")
+        st.info("Verifica que el repo sea público o que tu token esté configurado si es privado.")
+        raise e
     """Carga los datos desde Google Drive o local según disponibilidad"""
     
     # Rutas locales

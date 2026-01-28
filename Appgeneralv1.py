@@ -608,32 +608,45 @@ def to_excel(df):
     return output
 
 # ============================================================================
-# DUCKDB DIRECTO SOBRE PARQUET REMOTO (sin cargar todo en pandas)
+# CARGA OPTIMIZADA: datasets → temporal → DuckDB (sin OOM si optimizamos tipos)
 # ============================================================================
+from datasets import load_dataset
+import tempfile
 import duckdb
-from datasets import load_dataset  # solo si lo necesitás para otra cosa
 
 @st.cache_resource
 def get_duckdb_conn():
+    # Descarga solo una vez (con cache)
+    with st.spinner("Cargando parquet desde Hugging Face..."):
+        df = load_dataset(
+            "gerrojo82/yunta-dashboad-datos",
+            "movimientos",
+            split="train"
+        ).to_pandas()
+
+        # Optimiza tipos para ahorrar RAM (crucial para 9.6M filas)
+        for col in df.select_dtypes(['object', 'string']).columns:
+            if df[col].nunique() / len(df) < 0.5:
+                df[col] = df[col].astype('category')
+        for col in df.select_dtypes(['float64']).columns:
+            df[col] = df[col].astype('float32')
+        for col in df.select_dtypes(['int64']).columns:
+            df[col] = df[col].astype('int32')
+
+    # Crea archivo temporal
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.parquet')
+    df.to_parquet(temp_file.name)
+
+    # Conexión DuckDB
     con = duckdb.connect(database=':memory:')
-    
-    # Instala extensión para leer HTTP (Hugging Face)
-    con.execute("INSTALL httpfs;")
-    con.execute("LOAD httpfs;")
-    
-    # Crea vista directa sobre el parquet remoto (sin descargar todo)
-    con.execute("""
-        CREATE VIEW movimientos AS
-        SELECT * FROM read_parquet('https://huggingface.co/datasets/gerrojo82/yunta-dashboad-datos/resolve/main/movimientos/train/data-*.parquet')
-    """)
-    
-    # Si también tenés consolidado
-    # con.execute("CREATE VIEW consolidado AS SELECT * FROM read_parquet('https://huggingface.co/datasets/gerrojo82/yunta-dashboad-datos/resolve/main/consolidado/train/data-*.parquet')")
-    
+    con.execute(f"CREATE VIEW movimientos AS SELECT * FROM read_parquet('{temp_file.name}')")
+
+    # Limpieza opcional (no borra mientras la app corre)
+    # import os; os.unlink(temp_file.name)  # descomentar solo si no usás la vista después
+
     return con
 
 con = get_duckdb_conn()
-
 # ============================================================================
 # FUNCIONES AUXILIARES Y METADATA (ahora con SQL directo)
 # ============================================================================

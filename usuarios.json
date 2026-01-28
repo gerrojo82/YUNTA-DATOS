@@ -1,0 +1,26 @@
+{
+    "admin": {
+        "password": "admin123",
+        "nombre": "Administrador",
+        "tiendas": ["TODAS"],
+        "pantallas": ["TODAS"]
+    },
+    "gerente_mza": {
+        "password": "mza2025",
+        "nombre": "Gerente Mendoza",
+        "tiendas": ["Godoy Cruz", "Las Heras", "Guaymallen", "Maipu"],
+        "pantallas": ["📊 Ventas 360", "🔄 Recepciones y Transferencias", "💰 Presupuestos"]
+    },
+    "supervisor_gc": {
+        "password": "gc123",
+        "nombre": "Supervisor Godoy Cruz",
+        "tiendas": ["Godoy Cruz"],
+        "pantallas": ["📊 Ventas 360"]
+    },
+    "german": {
+        "password": "yunta2025",
+        "nombre": "Germán",
+        "tiendas": ["TODAS"],
+        "pantallas": ["TODAS"]
+    }
+}

@@ -607,43 +607,68 @@ def to_excel(df):
     output.seek(0)
     return output
 
-# ==========================================================================
-# CARGAR DATOS (Local o Google Drive)
-# ==========================================================================
+# ============================================================================
+# CARGAR DATOS (Local o Hugging Face)
+# ============================================================================
 import tempfile
+from pathlib import Path
+from datasets import load_dataset
+import streamlit as st
+import duckdb
+import pandas as pd
+from datetime import datetime
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# Rutas locales (solo funcionan en tu PC)
+# Rutas locales (solo funcionan en tu PC para desarrollo)
 PARQUET_PATH_LOCAL = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\MOVIMIENTOS_STOCK_PowerBI.parquet")
 PARQUET_PATH_REPO = BASE_DIR / "MOVIMIENTOS_STOCK_PowerBI.parquet"
 
-# Determinar origen de datos
+# Variable global para el path del parquet que usará DuckDB
 PARQUET_PATH = None
 
+# Determinar origen de datos
 if PARQUET_PATH_LOCAL.exists():
-    # LOCAL: usar archivo directo (tu PC)
+    # Modo desarrollo local: archivo directo en tu PC
     PARQUET_PATH = str(PARQUET_PATH_LOCAL)
+    st.info("Modo local detectado: cargando desde archivo en tu PC")
 elif PARQUET_PATH_REPO.exists() and PARQUET_PATH_REPO.stat().st_size > 1024:
-    # REPO: archivo en el repositorio
+    # Archivo incluido en el repositorio (si lo subiste al Git)
     PARQUET_PATH = str(PARQUET_PATH_REPO)
+    st.info("Cargando desde archivo en el repositorio")
 else:
-    # NUBE: descargar de Google Drive
-    try:
-        with st.spinner("📥 Descargando datos desde Google Drive..."):
-            df_movimientos_drive = cargar_parquet_desde_drive(MOVIMIENTOS_ID)
-            # Guardar temporalmente para DuckDB
+    # Modo nube (Streamlit Cloud): cargar desde Hugging Face
+    with st.spinner("📥 Cargando datos completos desde Hugging Face..."):
+        try:
+            # Si el dataset es privado y configuraste secreto, descomenta:
+            # from huggingface_hub import login
+            # login(token=st.secrets.get("HF_TOKEN"))
+
+            df_movimientos = load_dataset(
+                "gerrojo82/yunta-dashboad-datos",
+                "movimientos",
+                split="train"
+            ).to_pandas()
+
+            # Guardar temporalmente para que DuckDB pueda leerlo (obligatorio)
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.parquet')
-            df_movimientos_drive.to_parquet(temp_file.name)
+            df_movimientos.to_parquet(temp_file.name)
             PARQUET_PATH = temp_file.name
-    except Exception as e:
-        st.error(f"❌ Error al descargar de Google Drive: {e}")
-        st.stop()
+
+            st.success("Datos cargados exitosamente desde Hugging Face")
+        except Exception as e:
+            st.error(f"❌ Error al cargar desde Hugging Face: {str(e)}")
+            st.info("Posibles causas: dataset privado sin token, repo no encontrado o conexión.")
+            st.info("Link del dataset: https://huggingface.co/datasets/gerrojo82/yunta-dashboad-datos")
+            st.stop()
 
 if PARQUET_PATH is None:
-    st.error("❌ No se pudo cargar el archivo de datos")
+    st.error("❌ No se pudo determinar la fuente de datos")
     st.stop()
 
+# ============================================================================
+# CONEXIÓN DUCKDB
+# ============================================================================
 @st.cache_resource
 def get_con():
     con = duckdb.connect(database=":memory:")
@@ -652,6 +677,9 @@ def get_con():
 
 con = get_con()
 
+# ============================================================================
+# FUNCIONES AUXILIARES Y METADATA
+# ============================================================================
 @st.cache_data(ttl=3600)
 def get_schema_cols():
     df = con.execute("DESCRIBE SELECT * FROM movimientos").df()
@@ -673,12 +701,15 @@ def sql_in_list_str(values):
 def get_metadata():
     fecha_min = con.execute("SELECT MIN(Fecha) AS fmin FROM movimientos").fetchone()[0]
     fecha_max = con.execute("SELECT MAX(Fecha) AS fmax FROM movimientos").fetchone()[0]
+    
     if isinstance(fecha_min, str):
         fecha_min = datetime.fromisoformat(fecha_min)
     if isinstance(fecha_max, str):
         fecha_max = datetime.fromisoformat(fecha_max)
+    
     tiendas = con.execute("SELECT DISTINCT Tienda FROM movimientos ORDER BY Tienda").df()["Tienda"].tolist()
     proveedores = con.execute("SELECT DISTINCT Proveedor FROM movimientos ORDER BY Proveedor").df()["Proveedor"].tolist()
+    
     return fecha_min, fecha_max, tiendas, proveedores
 
 fecha_min, fecha_max, todas_tiendas, todas_proveedores = get_metadata()
@@ -742,12 +773,10 @@ def get_todos_filtrados(fecha_desde_str, fecha_hasta_str, tiendas_tuple):
         "Costo",
         "Proveedor"
     ]
-
     if has_col("Tienda_Origen"):
         cols.append("Tienda_Origen")
     if has_col("Tienda_Destino"):
         cols.append("Tienda_Destino")
-
     if has_col("Numero_Documento"):
         cols.append("Numero_Documento")
     cols_sql = ",\n ".join(cols)

@@ -608,77 +608,34 @@ def to_excel(df):
     return output
 
 # ============================================================================
-# CARGAR DATOS (Local o Hugging Face)
+# DUCKDB DIRECTO SOBRE PARQUET REMOTO (sin cargar todo en pandas)
 # ============================================================================
-import tempfile
-from pathlib import Path
-from datasets import load_dataset
-import streamlit as st
 import duckdb
-import pandas as pd
-from datetime import datetime
+from datasets import load_dataset  # solo si lo necesitás para otra cosa
 
-BASE_DIR = Path(__file__).resolve().parent
-
-# Rutas locales (solo funcionan en tu PC para desarrollo)
-PARQUET_PATH_LOCAL = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\MOVIMIENTOS_STOCK_PowerBI.parquet")
-PARQUET_PATH_REPO = BASE_DIR / "MOVIMIENTOS_STOCK_PowerBI.parquet"
-
-# Variable global para el path del parquet que usará DuckDB
-PARQUET_PATH = None
-
-# Determinar origen de datos
-if PARQUET_PATH_LOCAL.exists():
-    # Modo desarrollo local: archivo directo en tu PC
-    PARQUET_PATH = str(PARQUET_PATH_LOCAL)
-    st.info("Modo local detectado: cargando desde archivo en tu PC")
-elif PARQUET_PATH_REPO.exists() and PARQUET_PATH_REPO.stat().st_size > 1024:
-    # Archivo incluido en el repositorio (si lo subiste al Git)
-    PARQUET_PATH = str(PARQUET_PATH_REPO)
-    st.info("Cargando desde archivo en el repositorio")
-else:
-    # Modo nube (Streamlit Cloud): cargar desde Hugging Face
-    with st.spinner("📥 Cargando datos completos desde Hugging Face..."):
-        try:
-            # Si el dataset es privado y configuraste secreto, descomenta:
-            # from huggingface_hub import login
-            # login(token=st.secrets.get("HF_TOKEN"))
-
-            df_movimientos = load_dataset(
-                "gerrojo82/yunta-dashboad-datos",
-                "movimientos",
-                split="train"
-            ).to_pandas()
-
-            # Guardar temporalmente para que DuckDB pueda leerlo (obligatorio)
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.parquet')
-            df_movimientos.to_parquet(temp_file.name)
-            PARQUET_PATH = temp_file.name
-
-            st.success("Datos cargados exitosamente desde Hugging Face")
-        except Exception as e:
-            st.error(f"❌ Error al cargar desde Hugging Face: {str(e)}")
-            st.info("Posibles causas: dataset privado sin token, repo no encontrado o conexión.")
-            st.info("Link del dataset: https://huggingface.co/datasets/gerrojo82/yunta-dashboad-datos")
-            st.stop()
-
-if PARQUET_PATH is None:
-    st.error("❌ No se pudo determinar la fuente de datos")
-    st.stop()
-
-# ============================================================================
-# CONEXIÓN DUCKDB
-# ============================================================================
 @st.cache_resource
-def get_con():
-    con = duckdb.connect(database=":memory:")
-    con.execute(f"CREATE VIEW movimientos AS SELECT * FROM read_parquet('{PARQUET_PATH}')")
+def get_duckdb_conn():
+    con = duckdb.connect(database=':memory:')
+    
+    # Instala extensión para leer HTTP (Hugging Face)
+    con.execute("INSTALL httpfs;")
+    con.execute("LOAD httpfs;")
+    
+    # Crea vista directa sobre el parquet remoto (sin descargar todo)
+    con.execute("""
+        CREATE VIEW movimientos AS
+        SELECT * FROM read_parquet('https://huggingface.co/datasets/gerrojo82/yunta-dashboad-datos/resolve/main/movimientos/train/data-*.parquet')
+    """)
+    
+    # Si también tenés consolidado
+    # con.execute("CREATE VIEW consolidado AS SELECT * FROM read_parquet('https://huggingface.co/datasets/gerrojo82/yunta-dashboad-datos/resolve/main/consolidado/train/data-*.parquet')")
+    
     return con
 
-con = get_con()
+con = get_duckdb_conn()
 
 # ============================================================================
-# FUNCIONES AUXILIARES Y METADATA
+# FUNCIONES AUXILIARES Y METADATA (ahora con SQL directo)
 # ============================================================================
 @st.cache_data(ttl=3600)
 def get_schema_cols():
@@ -693,8 +650,8 @@ def has_col(col: str) -> bool:
 def sql_in_list_str(values):
     safe = []
     for v in values:
-        v = str(v)
-        safe.append("'" + v.replace("'", "''") + "'")
+        v = str(v).replace("'", "''")
+        safe.append(f"'{v}'")
     return ",".join(safe) if safe else "''"
 
 @st.cache_data(ttl=3600)
@@ -707,10 +664,10 @@ def get_metadata():
     if isinstance(fecha_max, str):
         fecha_max = datetime.fromisoformat(fecha_max)
     
-    tiendas = con.execute("SELECT DISTINCT Tienda FROM movimientos ORDER BY Tienda").df()["Tienda"].tolist()
-    proveedores = con.execute("SELECT DISTINCT Proveedor FROM movimientos ORDER BY Proveedor").df()["Proveedor"].tolist()
+    tiendas_df = con.execute("SELECT DISTINCT Tienda FROM movimientos ORDER BY Tienda").df()
+    proveedores_df = con.execute("SELECT DISTINCT Proveedor FROM movimientos ORDER BY Proveedor").df()
     
-    return fecha_min, fecha_max, tiendas, proveedores
+    return fecha_min, fecha_max, tiendas_df["Tienda"].tolist(), proveedores_df["Proveedor"].tolist()
 
 fecha_min, fecha_max, todas_tiendas, todas_proveedores = get_metadata()
 
@@ -730,8 +687,7 @@ df_productos_lista = obtener_lista_productos()
 
 @st.cache_data(ttl=3600)
 def get_ventas_filtradas(fecha_desde_str, fecha_hasta_str, tiendas_tuple):
-    tiendas_sel = list(tiendas_tuple)
-    tiendas_sql = sql_in_list_str(tiendas_sel)
+    tiendas_sql = sql_in_list_str(tiendas_tuple)
     sql = f"""
         SELECT
             Fecha,
@@ -761,8 +717,7 @@ def get_ventas_filtradas(fecha_desde_str, fecha_hasta_str, tiendas_tuple):
 
 @st.cache_data(ttl=3600)
 def get_todos_filtrados(fecha_desde_str, fecha_hasta_str, tiendas_tuple):
-    tiendas_sel = list(tiendas_tuple)
-    tiendas_sql = sql_in_list_str(tiendas_sel)
+    tiendas_sql = sql_in_list_str(tiendas_tuple)
     cols = [
         "Fecha",
         "Tienda",

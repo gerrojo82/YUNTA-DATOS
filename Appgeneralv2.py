@@ -5,9 +5,6 @@ from datetime import datetime, timedelta
 from io import BytesIO
 import duckdb
 from pathlib import Path
-import requests
-import json
-import tempfile
 
 # ============================================================================
 # CONFIGURACIÓN
@@ -19,94 +16,38 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+if "dark_mode" not in st.session_state:
+    st.session_state.dark_mode = True
+
+with st.sidebar:
+    st.markdown("### 🎨 Modo")
+    is_dark = st.toggle("🌙 Oscuro / ☀️ Claro", value=st.session_state.dark_mode, key="global_dark_mode_toggle")
+
+if is_dark != st.session_state.dark_mode:
+    st.session_state.dark_mode = is_dark
+    st.rerun()
 # ============================================================================
-# CARGAR DATOS DESDE GOOGLE DRIVE (ARCHIVOS GRANDES)
+# 🔐 MÓDULO DE LOGIN - Agregar al INICIO de Appgeneralv1.py
 # ============================================================================
-
-# IDs de los archivos en Google Drive
-MOVIMIENTOS_IDS = [
-    "12Gu0SUxpG-k3eDUr0QeMYhXTDSuO0pvB",  # Parte 1
-    "19wHfeHKeFKotFfKsrMFSITed2Vosezfc",  # Parte 2
-    "1EVOKHcZwET4WU6vX0eaGmv19MsGoJ6ne",  # Parte 3
-]
-CONSOLIDADO_ID = "1UPEGAtLPslu9nmcZjJc3UjmyWWKtiS9A"
-
-@st.cache_data(ttl=3600)
-def descargar_de_drive(file_id):
-    """Descarga un archivo parquet desde Google Drive"""
-    
-    def get_confirm_token(response):
-        for key, value in response.cookies.items():
-            if key.startswith('download_warning'):
-                return value
-        return None
-
-    URL = "https://drive.google.com/uc?export=download"
-    
-    session = requests.Session()
-    response = session.get(URL, params={'id': file_id}, stream=True)
-    token = get_confirm_token(response)
-
-    if token:
-        params = {'id': file_id, 'confirm': token}
-        response = session.get(URL, params=params, stream=True)
-
-    # Guardar contenido en memoria
-    content = BytesIO()
-    for chunk in response.iter_content(chunk_size=32768):
-        if chunk:
-            content.write(chunk)
-    content.seek(0)
-    
-    return pd.read_parquet(content)
-
-@st.cache_data(ttl=3600)
-def cargar_movimientos_desde_drive():
-    """Carga y une las 3 partes del archivo de movimientos"""
-    dfs = []
-    for i, file_id in enumerate(MOVIMIENTOS_IDS, 1):
-        df_parte = descargar_de_drive(file_id)
-        dfs.append(df_parte)
-    
-    # Unir todas las partes
-    df_completo = pd.concat(dfs, ignore_index=True)
-    return df_completo
-
-@st.cache_data(ttl=3600)
-def cargar_consolidado_desde_drive():
-    """Carga el archivo de seguimiento de pedidos"""
-    return descargar_de_drive(CONSOLIDADO_ID)
-
-# ============================================================================
-# FUNCIÓN PRINCIPAL DE CARGA DE DATOS
-# ============================================================================
-def cargar_datos_movimientos():
-    """Carga movimientos desde local o Google Drive"""
-    
-    # Ruta local
-    ruta_local = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\MOVIMIENTOS_STOCK_PowerBI.parquet")
-    
-    if ruta_local.exists():
-        # LOCAL: cargar directo
-        return pd.read_parquet(ruta_local)
-    else:
-        # NUBE: descargar de Google Drive (3 partes)
-        with st.spinner("📥 Descargando datos desde Google Drive..."):
-            return cargar_movimientos_desde_drive()
-
-# ============================================================================
-# 🔐 MÓDULO DE LOGIN
+# Poner esto DESPUÉS de st.set_page_config() y ANTES de todo lo demás
 # ============================================================================
 
+import json
+
+# ============================================================================
+# CONFIGURACIÓN DE USUARIOS
+# ============================================================================
 def get_usuarios():
     """
     Obtiene usuarios desde JSON (desarrollo local) o Streamlit Secrets (producción)
     """
+    # Primero intentar JSON local (desarrollo)
     json_path = Path("usuarios.json")
     if json_path.exists():
         with open(json_path, "r", encoding="utf-8") as f:
             return json.load(f)
     
+    # Si no hay JSON, intentar Streamlit Secrets (producción)
     try:
         if "usuarios" in st.secrets:
             usuarios = {}
@@ -122,6 +63,7 @@ def get_usuarios():
     except FileNotFoundError:
         pass
     
+    # Si no existe nada, usuarios por defecto
     return {
         "admin": {
             "password": "admin123",
@@ -130,7 +72,9 @@ def get_usuarios():
             "pantallas": ["TODAS"]
         }
     }
-
+# ============================================================================
+# FUNCIONES DE AUTENTICACIÓN
+# ============================================================================
 def verificar_login(usuario, password):
     """Verifica credenciales y retorna datos del usuario o None"""
     usuarios = get_usuarios()
@@ -144,21 +88,25 @@ def verificar_login(usuario, password):
     return None
 
 def tiene_acceso_tienda(tienda, tiendas_permitidas):
+    """Verifica si el usuario tiene acceso a una tienda"""
     if "TODAS" in tiendas_permitidas:
         return True
     return tienda in tiendas_permitidas
 
 def tiene_acceso_pantalla(pantalla, pantallas_permitidas):
+    """Verifica si el usuario tiene acceso a una pantalla"""
     if "TODAS" in pantallas_permitidas:
         return True
     return pantalla in pantallas_permitidas
 
 def filtrar_tiendas(todas_tiendas, tiendas_permitidas):
+    """Filtra la lista de tiendas según permisos del usuario"""
     if "TODAS" in tiendas_permitidas:
         return todas_tiendas
     return [t for t in todas_tiendas if t in tiendas_permitidas]
 
 def filtrar_pantallas(todas_pantallas, pantallas_permitidas):
+    """Filtra la lista de pantallas según permisos del usuario"""
     if "TODAS" in pantallas_permitidas:
         return todas_pantallas
     return [p for p in todas_pantallas if p in pantallas_permitidas]
@@ -238,6 +186,7 @@ if "user_data" not in st.session_state:
 def mostrar_login():
     """Muestra la pantalla de login"""
     
+    # Ocultar sidebar y navegación en login
     st.markdown("""
     <style>
         [data-testid="stSidebar"] { display: none !important; }
@@ -250,8 +199,10 @@ def mostrar_login():
     </style>
     """, unsafe_allow_html=True)
     
+    # Aplicar CSS de login
     st.markdown(login_css, unsafe_allow_html=True)
     
+    # Contenedor centrado
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
@@ -263,9 +214,11 @@ def mostrar_login():
         </div>
         """, unsafe_allow_html=True)
         
+        # Mostrar error si existe
         if "login_error" in st.session_state and st.session_state.login_error:
             st.markdown(f'<div class="login-error">❌ {st.session_state.login_error}</div>', unsafe_allow_html=True)
         
+        # Formulario de login
         with st.form("login_form"):
             usuario = st.text_input("👤 Usuario", placeholder="Ingresá tu usuario")
             password = st.text_input("🔑 Contraseña", type="password", placeholder="Ingresá tu contraseña")
@@ -293,6 +246,9 @@ def mostrar_login():
         </div>
         """, unsafe_allow_html=True)
 
+# ============================================================================
+# FUNCIÓN DE LOGOUT
+# ============================================================================
 def logout():
     """Cierra la sesión del usuario"""
     st.session_state.logged_in = False
@@ -301,170 +257,113 @@ def logout():
     st.rerun()
 
 # ============================================================================
-# VERIFICAR SI ESTÁ LOGUEADO
+# VERIFICAR SI ESTÁ LOGUEADO - PONER ESTO ANTES DE TODO EL CONTENIDO
 # ============================================================================
 if not st.session_state.logged_in:
     mostrar_login()
-    st.stop()
+    st.stop()  # Detiene la ejecución aquí si no está logueado
 
+# ============================================================================
+# SI LLEGAMOS ACÁ, EL USUARIO ESTÁ LOGUEADO
+# ============================================================================
+# Obtener datos del usuario actual
 usuario_actual = st.session_state.user_data
 tiendas_usuario = usuario_actual["tiendas"]
 pantallas_usuario = usuario_actual["pantallas"]
 
 # ============================================================================
-# MODO OSCURO/CLARO GLOBAL
+# MODO OSCURO/CLARO GLOBAL - Toggle en el SIDEBAR superior (siempre visible)
 # ============================================================================
 if "dark_mode" not in st.session_state:
-    st.session_state.dark_mode = True
+    st.session_state.dark_mode = True  # Empieza en oscuro
 
+# Toggle en el sidebar (arriba de todo)
 with st.sidebar:
     st.markdown("### 🎨 Modo")
     is_dark = st.toggle("🌙 Oscuro / ☀️ Claro", value=st.session_state.dark_mode, key="global_dark_mode_toggle")
 
+# Si cambió → recargar la app completa
 if is_dark != st.session_state.dark_mode:
     st.session_state.dark_mode = is_dark
     st.rerun()
 
-# ============================================================================
+# ==========================================================================
 # CSS GLOBAL
-# ============================================================================
+# ==========================================================================
 dark_css = """<style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
     * { font-family: 'Inter', sans-serif !important; box-sizing: border-box; }
 
-    .stApp { background: #1a1a2e !important; color: #e2e8f0 !important; }
+    .stApp { background-color: #202733 !important; color: #e5e7eb !important; }
     .block-container { padding: 2rem 3rem 6rem !important; max-width: 100% !important; }
 
-    .main-header { color: #e879f9 !important; font-size: 2.9rem !important; font-weight: 900 !important; }
-    .subtitle { color: #a1a1aa !important; font-size: 1.05rem !important; margin-bottom: 1.5rem; }
+    .main-header { color: #7dd3fc !important; font-size: 2.9rem !important; font-weight: 900 !important; }
+    .subtitle { color: #cbd5e1 !important; font-size: 1.05rem !important; margin-bottom: 1.5rem; }
 
     .card {
-        background: #252542 !important;
-        border: 1px solid #3f3f5a !important;
-        border-radius: 12px !important;
+        background: #2a3242 !important;
+        border: 1px solid #364155 !important;
+        border-radius: 14px !important;
         padding: 1.6rem 1.2rem !important;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.3) !important;
+        box-shadow: 0 6px 18px rgba(0,0,0,0.25) !important;
         transition: all 0.3s ease !important;
         text-align: center;
     }
     .card:hover {
         transform: translateY(-4px) !important;
-        box-shadow: 0 8px 30px rgba(232,121,249,0.15) !important;
-        border-color: #e879f9 !important;
+        box-shadow: 0 12px 28px rgba(125,211,252,0.18) !important;
+        border-color: #7dd3fc80 !important;
     }
 
-    .metric-label { color: #e879f9 !important; font-size: 0.85rem !important; font-weight: 600 !important; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem; }
-    .metric-value { font-size: clamp(1.6rem, 4vw, 2.4rem) !important; font-weight: 800 !important; color: #ffffff !important; line-height: 1.1 !important; }
+    .metric-label { color: #94a3b8 !important; font-size: 0.85rem !important; font-weight: 600 !important; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 0.6rem; }
+    .metric-value { font-size: clamp(1.6rem, 4vw, 2.4rem) !important; font-weight: 800 !important; color: #f8fafc !important; line-height: 1.1 !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; max-width: 100% !important; }
 
-    .row-widget.stHorizontal { flex-wrap: nowrap !important; overflow-x: auto !important; gap: 1.2rem !important; }
+    .row-widget.stHorizontal { flex-wrap: nowrap !important; overflow-x: auto !important; gap: 1.2rem !important; padding-bottom: 0.6rem !important; }
     [data-testid="column"] > div { min-width: 240px !important; flex-shrink: 0 !important; }
 
-    .stDataFrame { background: #252542 !important; border-radius: 12px !important; overflow: hidden; }
-    .dataframe thead th { background: #1a1a2e !important; color: #e879f9 !important; font-weight: 600 !important; }
-    .dataframe tbody tr:hover { background: #2e2e4a !important; }
-    .dataframe tbody td { color: #e2e8f0 !important; }
+    .stDataFrame { background: #2a3242 !important; border-radius: 12px !important; overflow: hidden; }
+    .dataframe thead th { background: #202733 !important; color: #93c5fd !important; font-weight: 600 !important; border-bottom: 2px solid #364155 !important; }
+    .dataframe tbody tr:hover { background: #313a4d !important; }
 
-    [data-testid="stSidebar"] { background: #1a1a2e !important; border-right: 1px solid #3f3f5a !important; }
-    [data-testid="stSidebar"] * { color: #e2e8f0 !important; }
-    [data-testid="stSidebar"] .stMarkdown h3 { color: #e879f9 !important; }
-    
-    button[kind="primary"], .stButton > button { 
-        background: linear-gradient(135deg, #c026d3, #e879f9) !important; 
-        color: white !important;
-        border: none !important;
-        border-radius: 8px !important;
-    }
-    
-    .stSelectbox > div > div { background: #252542 !important; border-color: #3f3f5a !important; color: #e2e8f0 !important; }
-    .stMultiSelect > div > div { background: #252542 !important; border-color: #3f3f5a !important; color: #e2e8f0 !important; }
-    .stTextInput > div > div > input { background: #252542 !important; border-color: #3f3f5a !important; color: #e2e8f0 !important; }
-    
-    .stSelectbox label, .stMultiSelect label, .stTextInput label { color: #c4b5fd !important; font-weight: 500 !important; }
-    
-    .streamlit-expanderHeader { background: #252542 !important; border-radius: 8px !important; color: #e2e8f0 !important; }
-    .streamlit-expanderContent { background: #1e1e38 !important; }
-    
-    .stTabs [data-baseweb="tab-list"] { background: #252542 !important; border-radius: 8px; }
-    .stTabs [data-baseweb="tab"] { color: #a1a1aa !important; }
-    .stTabs [aria-selected="true"] { background: linear-gradient(135deg, #c026d3, #e879f9) !important; color: white !important; border-radius: 6px; }
-    
-    .stMarkdown p, .stMarkdown li { color: #e2e8f0 !important; }
-    .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 { color: #e879f9 !important; }
-    
-    .stDownloadButton > button {
-        background: #252542 !important;
-        border: 1px solid #e879f9 !important;
-        color: #e879f9 !important;
-    }
+    [data-testid="stSidebar"] { background: #1b2230 !important; border-right: 1px solid #2a3446 !important; }
+    button[kind="primary"] { background: linear-gradient(135deg, #38bdf8, #60a5fa) !important; }
+
 </style>"""
 
 light_css = """<style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
     * { font-family: 'Inter', sans-serif !important; box-sizing: border-box; }
 
-    .stApp { background: #fafafa !important; color: #1f2937 !important; }
+    .stApp { background-color: #f8fafc !important; color: #0f172a !important; }
     .block-container { padding: 2rem 3rem 6rem !important; max-width: 100% !important; }
 
-    .main-header { color: #be185d !important; font-size: 2.9rem !important; font-weight: 900 !important; }
-    .subtitle { color: #6b7280 !important; font-size: 1.05rem !important; margin-bottom: 1.5rem; }
+    .main-header { color: #0ea5e9 !important; font-size: 2.9rem !important; font-weight: 900 !important; }
+    .subtitle { color: #64748b !important; font-size: 1.05rem !important; margin-bottom: 1.5rem; }
 
     .card {
         background: white !important;
-        border: 1px solid #e5e7eb !important;
-        border-radius: 12px !important;
+        border: 1px solid #e2e8f0 !important;
+        border-radius: 14px !important;
         padding: 1.6rem 1.2rem !important;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.06) !important;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08) !important;
+        transition: all 0.3s ease !important;
         text-align: center;
     }
     .card:hover {
-        transform: translateY(-4px) !important;
-        box-shadow: 0 8px 24px rgba(190,24,93,0.12) !important;
-        border-color: #f9a8d4 !important;
+        transform: translateY(-6px) !important;
+        box-shadow: 0 12px 32px rgba(14,165,233,0.15) !important;
+        border-color: #0ea5e980 !important;
     }
 
-    .metric-label { color: #be185d !important; font-size: 0.85rem !important; font-weight: 600 !important; text-transform: uppercase; }
-    .metric-value { font-size: clamp(1.6rem, 4vw, 2.4rem) !important; font-weight: 800 !important; color: #1f2937 !important; }
+    .metric-label { color: #64748b !important; font-size: 0.85rem !important; font-weight: 600 !important; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 0.6rem; }
+    .metric-value { font-size: clamp(1.6rem, 4vw, 2.4rem) !important; font-weight: 800 !important; color: #0f172a !important; line-height: 1.1 !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; max-width: 100% !important; }
 
-    .row-widget.stHorizontal { flex-wrap: nowrap !important; overflow-x: auto !important; gap: 1.2rem !important; }
+    .row-widget.stHorizontal { flex-wrap: nowrap !important; overflow-x: auto !important; gap: 1.2rem !important; padding-bottom: 0.6rem !important; }
     [data-testid="column"] > div { min-width: 240px !important; flex-shrink: 0 !important; }
 
-    .stDataFrame { background: white !important; border-radius: 12px !important; border: 1px solid #e5e7eb !important; }
-    .dataframe thead th { background: #fdf2f8 !important; color: #be185d !important; font-weight: 600 !important; }
-    .dataframe tbody tr:hover { background: #fdf2f8 !important; }
-    .dataframe tbody td { color: #1f2937 !important; }
+    .stDataFrame { background: white !important; border-radius: 12px !important; overflow: hidden; }
+    button[kind="primary"] { background: linear-gradient(135deg, #0ea5e9, #22d3ee) !important; }
 
-    [data-testid="stSidebar"] { background: #ffffff !important; border-right: 1px solid #e5e7eb !important; }
-    [data-testid="stSidebar"] * { color: #1f2937 !important; }
-    [data-testid="stSidebar"] .stMarkdown h3 { color: #be185d !important; }
-    
-    button[kind="primary"], .stButton > button { 
-        background: linear-gradient(135deg, #be185d, #ec4899) !important; 
-        color: white !important;
-        border: none !important;
-        border-radius: 8px !important;
-    }
-    
-    .stSelectbox > div > div { background: white !important; border-color: #d1d5db !important; color: #1f2937 !important; }
-    .stMultiSelect > div > div { background: white !important; border-color: #d1d5db !important; color: #1f2937 !important; }
-    .stTextInput > div > div > input { background: white !important; border-color: #d1d5db !important; color: #1f2937 !important; }
-    
-    .stSelectbox label, .stMultiSelect label, .stTextInput label { color: #4b5563 !important; font-weight: 500 !important; }
-    
-    .streamlit-expanderHeader { background: white !important; border: 1px solid #e5e7eb !important; border-radius: 8px !important; }
-    .streamlit-expanderContent { background: #fafafa !important; }
-    
-    .stTabs [data-baseweb="tab-list"] { background: white !important; border: 1px solid #e5e7eb; border-radius: 8px; }
-    .stTabs [data-baseweb="tab"] { color: #6b7280 !important; }
-    .stTabs [aria-selected="true"] { background: linear-gradient(135deg, #be185d, #ec4899) !important; color: white !important; border-radius: 6px; }
-    
-    .stMarkdown p, .stMarkdown li { color: #1f2937 !important; }
-    .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 { color: #be185d !important; }
-    
-    .stDownloadButton > button {
-        background: white !important;
-        border: 1px solid #be185d !important;
-        color: #be185d !important;
-    }
 </style>"""
 
 if st.session_state.dark_mode:
@@ -536,24 +435,27 @@ def to_excel(df):
     return output
 
 # ==========================================================================
-# CARGAR DATOS Y CREAR CONEXIÓN DUCKDB
+# DUCKDB
 # ==========================================================================
+BASE_DIR = Path(__file__).resolve().parent
+PARQUET_PATH = str(BASE_DIR / "MOVIMIENTOS_STOCK_PowerBI.parquet")
+
+# Validación de archivo parquet (LFS / existencia)
+parquet_file = Path(PARQUET_PATH)
+if not parquet_file.exists():
+    st.error("❌ No se encontró el archivo MOVIMIENTOS_STOCK_PowerBI.parquet en el repo")
+    st.stop()
+if parquet_file.stat().st_size < 1024:
+    st.error("❌ El archivo parquet parece ser un puntero LFS (no descargado). Revisa LFS en Streamlit Cloud.")
+    st.stop()
+
 @st.cache_resource
-def inicializar_duckdb():
-    """Carga los datos y crea la conexión DuckDB"""
-    
-    # Cargar datos
-    df_movimientos = cargar_datos_movimientos()
-    
-    # Crear conexión DuckDB en memoria
+def get_con():
     con = duckdb.connect(database=":memory:")
-    
-    # Registrar el DataFrame como tabla
-    con.register('movimientos', df_movimientos)
-    
+    con.execute(f"CREATE VIEW movimientos AS SELECT * FROM read_parquet('{PARQUET_PATH}')")
     return con
 
-con = inicializar_duckdb()
+con = get_con()
 
 @st.cache_data(ttl=3600)
 def get_schema_cols():
@@ -666,6 +568,7 @@ def get_todos_filtrados(fecha_desde_str, fecha_hasta_str, tiendas_tuple):
     df = con.execute(sql).df()
     df["Fecha"] = pd.to_datetime(df["Fecha"])
     return df
+
 
 # ============================================================================
 # SIDEBAR
@@ -4717,3 +4620,4 @@ st.markdown(f"""
     YUNTA Intelligence v2.3 - {datetime.now().strftime('%d/%m/%Y %H:%M')} | {len(df_filtrado):,} registros de ventas cargados
 </div>
 """, unsafe_allow_html=True)
+st.write("ESTO ES UNA PRUEBA - SI VES ESTO EN LA APP, LOS CAMBIOS LLEGARON - 2026")

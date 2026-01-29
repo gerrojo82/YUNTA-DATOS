@@ -95,7 +95,7 @@ def cargar_parquet_desde_drive(file_id):
 @st.cache_data(ttl=3600)
 def load_data():
     """Carga datos desde local o Google Drive"""
-    ruta_local = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\pages\CONSOLIDADO_COMPLETO.parquet")
+    ruta_local = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\CONSOLIDADO_COMPLETO.parquet")
     
     try:
         if ruta_local.exists():

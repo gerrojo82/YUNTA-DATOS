@@ -5,9 +5,7 @@ from datetime import datetime, timedelta
 from io import BytesIO
 import duckdb
 from pathlib import Path
-import requests
 import json
-import tempfile
 
 # ============================================================================
 # CONFIGURACIÓN
@@ -20,123 +18,62 @@ st.set_page_config(
 )
 
 # ============================================================================
-# CARGAR DATOS DESDE GOOGLE DRIVE (ARCHIVOS GRANDES)
+# CARGAR DATOS DESDE EL REPOSITORIO
 # ============================================================================
+BASE_DIR = Path(__file__).resolve().parent
 
-# IDs de los archivos en Google Drive
-MOVIMIENTOS_IDS = [
-    "12Gu0SUxpG-k3eDUr0QeMYhXTDSuO0pvB",  # Parte 1
-    "19wHfeHKeFKotFfKsrMFSITed2Vosezfc",  # Parte 2
-    "1EVOKHcZwET4WU6vX0eaGmv19MsGoJ6ne",  # Parte 3
-]
-CONSOLIDADO_ID = "1UPEGAtLPslu9nmcZjJc3UjmyWWKtiS9A"
-
-def descargar_de_drive_simple(file_id):
-    """Descarga un archivo parquet desde Google Drive"""
-    
-    def get_confirm_token(response):
-        for key, value in response.cookies.items():
-            if key.startswith('download_warning'):
-                return value
-        return None
-
-    URL = "https://drive.google.com/uc?export=download"
-    
-    session = requests.Session()
-    response = session.get(URL, params={'id': file_id}, stream=True, timeout=300)
-    token = get_confirm_token(response)
-
-    if token:
-        params = {'id': file_id, 'confirm': token}
-        response = session.get(URL, params=params, stream=True, timeout=300)
-
-    content = BytesIO()
-    for chunk in response.iter_content(chunk_size=32768):
-        if chunk:
-            content.write(chunk)
-    content.seek(0)
-    
-    return pd.read_parquet(content)
-
-# ============================================================================
-# PRECARGAR DATOS AL INICIO (ANTES DEL LOGIN)
-# ============================================================================
 @st.cache_resource(show_spinner=False)
 def precargar_movimientos():
-    """Precarga los datos de movimientos una sola vez"""
+    """Carga los datos de movimientos"""
     
+    # Ruta local (desarrollo)
     ruta_local = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\MOVIMIENTOS_STOCK_PowerBI.parquet")
     
     if ruta_local.exists():
         return pd.read_parquet(ruta_local)
-    else:
-        dfs = []
-        for file_id in MOVIMIENTOS_IDS:
-            df_parte = descargar_de_drive_simple(file_id)
-            dfs.append(df_parte)
-        return pd.concat(dfs, ignore_index=True)
+    
+    # Ruta en el repo (producción) - 3 partes
+    partes = []
+    for i in range(1, 4):
+        ruta_parte = BASE_DIR / f"MOVIMIENTOS_PARTE_{i}.parquet"
+        if ruta_parte.exists():
+            partes.append(pd.read_parquet(ruta_parte))
+    
+    if partes:
+        return pd.concat(partes, ignore_index=True)
+    
+    raise FileNotFoundError("No se encontraron los archivos de movimientos")
 
 @st.cache_resource(show_spinner=False)
 def precargar_consolidado():
-    """Precarga el archivo de seguimiento"""
+    """Carga el archivo de seguimiento"""
     
     ruta_local = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\pages\CONSOLIDADO_COMPLETO.parquet")
     
     if ruta_local.exists():
         return pd.read_parquet(ruta_local)
-    else:
-        return descargar_de_drive_simple(CONSOLIDADO_ID)
+    
+    ruta_repo = BASE_DIR / "CONSOLIDADO_COMPLETO.parquet"
+    if ruta_repo.exists():
+        return pd.read_parquet(ruta_repo)
+    
+    raise FileNotFoundError("No se encontró el archivo consolidado")
 
 # ============================================================================
-# CARGAR DATOS ANTES DE TODO (CON SPINNER VISIBLE)
+# CARGAR DATOS AL INICIO
 # ============================================================================
 if "datos_precargados" not in st.session_state:
-    
-    # Pantalla de carga
-    st.markdown("""
-    <style>
-        .loading-container {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 80vh;
-        }
-        .loading-title {
-            font-size: 2.5rem;
-            color: #e879f9;
-            margin-bottom: 20px;
-        }
-        .loading-text {
-            font-size: 1.2rem;
-            color: #a1a1aa;
-        }
-    </style>
-    <div class="loading-container">
-        <div class="loading-title">🚀 YUNTA Intelligence</div>
-        <div class="loading-text">Cargando datos desde Google Drive...</div>
-        <div class="loading-text">Esto puede tardar 1-2 minutos la primera vez</div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    with st.spinner("📥 Descargando archivos..."):
-        try:
-            st.session_state.df_movimientos = precargar_movimientos()
-            st.session_state.df_consolidado = precargar_consolidado()
-            st.session_state.datos_precargados = True
-            st.rerun()
-        except Exception as e:
-            st.error(f"❌ Error al cargar datos: {e}")
-            st.stop()
+    with st.spinner("📥 Cargando datos..."):
+        st.session_state.df_movimientos = precargar_movimientos()
+        st.session_state.df_consolidado = precargar_consolidado()
+        st.session_state.datos_precargados = True
 
 # ============================================================================
 # 🔐 MÓDULO DE LOGIN
 # ============================================================================
 
 def get_usuarios():
-    """
-    Obtiene usuarios desde JSON (desarrollo local) o Streamlit Secrets (producción)
-    """
+    """Obtiene usuarios desde JSON o Streamlit Secrets"""
     json_path = Path("usuarios.json")
     if json_path.exists():
         with open(json_path, "r", encoding="utf-8") as f:
@@ -167,7 +104,6 @@ def get_usuarios():
     }
 
 def verificar_login(usuario, password):
-    """Verifica credenciales y retorna datos del usuario o None"""
     usuarios = get_usuarios()
     if usuario in usuarios and usuarios[usuario]["password"] == password:
         return {
@@ -212,25 +148,10 @@ login_css = """
         border: 1px solid #3f3f5a;
         box-shadow: 0 20px 60px rgba(0,0,0,0.5);
     }
-    .login-header {
-        text-align: center;
-        margin-bottom: 30px;
-    }
-    .login-logo {
-        font-size: 3rem;
-        margin-bottom: 10px;
-    }
-    .login-title {
-        color: #e879f9;
-        font-size: 1.8rem;
-        font-weight: 800;
-        margin: 0;
-    }
-    .login-subtitle {
-        color: #a1a1aa;
-        font-size: 0.95rem;
-        margin-top: 5px;
-    }
+    .login-header { text-align: center; margin-bottom: 30px; }
+    .login-logo { font-size: 3rem; margin-bottom: 10px; }
+    .login-title { color: #e879f9; font-size: 1.8rem; font-weight: 800; margin: 0; }
+    .login-subtitle { color: #a1a1aa; font-size: 0.95rem; margin-top: 5px; }
     .login-error {
         background: #451a2e;
         border: 1px solid #ef4444;
@@ -240,12 +161,7 @@ login_css = """
         margin-bottom: 20px;
         text-align: center;
     }
-    .login-footer {
-        text-align: center;
-        margin-top: 30px;
-        color: #6b7280;
-        font-size: 0.85rem;
-    }
+    .login-footer { text-align: center; margin-top: 30px; color: #6b7280; font-size: 0.85rem; }
     .user-badge {
         background: linear-gradient(135deg, #c026d3, #e879f9);
         color: white;
@@ -271,16 +187,9 @@ if "user_data" not in st.session_state:
 # PANTALLA DE LOGIN
 # ============================================================================
 def mostrar_login():
-    """Muestra la pantalla de login"""
-    
     st.markdown("""
     <style>
         [data-testid="stSidebar"] { display: none !important; }
-        [data-testid="stSidebarNav"] { display: none !important; }
-        [data-testid="stSidebarNavItems"] { display: none !important; }
-        section[data-testid="stSidebar"] { display: none !important; }
-        .css-1d391kg { display: none !important; }
-        .css-1cypcdb { display: none !important; }
         header[data-testid="stHeader"] { display: none !important; }
     </style>
     """, unsafe_allow_html=True)
@@ -322,14 +231,9 @@ def mostrar_login():
                         st.session_state.login_error = "Usuario o contraseña incorrectos"
                         st.rerun()
         
-        st.markdown("""
-        <div class="login-footer">
-            La Yunta © 2025 - Business Intelligence
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown('<div class="login-footer">La Yunta © 2025 - Business Intelligence</div>', unsafe_allow_html=True)
 
 def logout():
-    """Cierra la sesión del usuario"""
     st.session_state.logged_in = False
     st.session_state.user_data = None
     st.session_state.login_error = None
@@ -361,145 +265,59 @@ if is_dark != st.session_state.dark_mode:
     st.rerun()
 
 # ============================================================================
-# CSS GLOBAL (igual que antes - no lo cambio para ahorrar espacio)
+# CSS GLOBAL
 # ============================================================================
 dark_css = """<style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
     * { font-family: 'Inter', sans-serif !important; box-sizing: border-box; }
-
     .stApp { background: #1a1a2e !important; color: #e2e8f0 !important; }
     .block-container { padding: 2rem 3rem 6rem !important; max-width: 100% !important; }
-
     .main-header { color: #e879f9 !important; font-size: 2.9rem !important; font-weight: 900 !important; }
     .subtitle { color: #a1a1aa !important; font-size: 1.05rem !important; margin-bottom: 1.5rem; }
-
-    .card {
-        background: #252542 !important;
-        border: 1px solid #3f3f5a !important;
-        border-radius: 12px !important;
-        padding: 1.6rem 1.2rem !important;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.3) !important;
-        transition: all 0.3s ease !important;
-        text-align: center;
-    }
-    .card:hover {
-        transform: translateY(-4px) !important;
-        box-shadow: 0 8px 30px rgba(232,121,249,0.15) !important;
-        border-color: #e879f9 !important;
-    }
-
-    .metric-label { color: #e879f9 !important; font-size: 0.85rem !important; font-weight: 600 !important; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem; }
-    .metric-value { font-size: clamp(1.6rem, 4vw, 2.4rem) !important; font-weight: 800 !important; color: #ffffff !important; line-height: 1.1 !important; }
-
-    .row-widget.stHorizontal { flex-wrap: nowrap !important; overflow-x: auto !important; gap: 1.2rem !important; }
-    [data-testid="column"] > div { min-width: 240px !important; flex-shrink: 0 !important; }
-
-    .stDataFrame { background: #252542 !important; border-radius: 12px !important; overflow: hidden; }
+    .card { background: #252542 !important; border: 1px solid #3f3f5a !important; border-radius: 12px !important; padding: 1.6rem 1.2rem !important; box-shadow: 0 4px 20px rgba(0,0,0,0.3) !important; text-align: center; }
+    .card:hover { transform: translateY(-4px) !important; box-shadow: 0 8px 30px rgba(232,121,249,0.15) !important; border-color: #e879f9 !important; }
+    .metric-label { color: #e879f9 !important; font-size: 0.85rem !important; font-weight: 600 !important; text-transform: uppercase; }
+    .metric-value { font-size: clamp(1.6rem, 4vw, 2.4rem) !important; font-weight: 800 !important; color: #ffffff !important; }
+    .stDataFrame { background: #252542 !important; border-radius: 12px !important; }
     .dataframe thead th { background: #1a1a2e !important; color: #e879f9 !important; font-weight: 600 !important; }
     .dataframe tbody tr:hover { background: #2e2e4a !important; }
-    .dataframe tbody td { color: #e2e8f0 !important; }
-
     [data-testid="stSidebar"] { background: #1a1a2e !important; border-right: 1px solid #3f3f5a !important; }
     [data-testid="stSidebar"] * { color: #e2e8f0 !important; }
     [data-testid="stSidebar"] .stMarkdown h3 { color: #e879f9 !important; }
-    
-    button[kind="primary"], .stButton > button { 
-        background: linear-gradient(135deg, #c026d3, #e879f9) !important; 
-        color: white !important;
-        border: none !important;
-        border-radius: 8px !important;
-    }
-    
-    .stSelectbox > div > div { background: #252542 !important; border-color: #3f3f5a !important; color: #e2e8f0 !important; }
-    .stMultiSelect > div > div { background: #252542 !important; border-color: #3f3f5a !important; color: #e2e8f0 !important; }
-    .stTextInput > div > div > input { background: #252542 !important; border-color: #3f3f5a !important; color: #e2e8f0 !important; }
-    
+    button[kind="primary"], .stButton > button { background: linear-gradient(135deg, #c026d3, #e879f9) !important; color: white !important; border: none !important; border-radius: 8px !important; }
+    .stSelectbox > div > div, .stMultiSelect > div > div, .stTextInput > div > div > input { background: #252542 !important; border-color: #3f3f5a !important; color: #e2e8f0 !important; }
     .stSelectbox label, .stMultiSelect label, .stTextInput label { color: #c4b5fd !important; font-weight: 500 !important; }
-    
-    .streamlit-expanderHeader { background: #252542 !important; border-radius: 8px !important; color: #e2e8f0 !important; }
-    .streamlit-expanderContent { background: #1e1e38 !important; }
-    
     .stTabs [data-baseweb="tab-list"] { background: #252542 !important; border-radius: 8px; }
-    .stTabs [data-baseweb="tab"] { color: #a1a1aa !important; }
     .stTabs [aria-selected="true"] { background: linear-gradient(135deg, #c026d3, #e879f9) !important; color: white !important; border-radius: 6px; }
-    
     .stMarkdown p, .stMarkdown li { color: #e2e8f0 !important; }
     .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 { color: #e879f9 !important; }
-    
-    .stDownloadButton > button {
-        background: #252542 !important;
-        border: 1px solid #e879f9 !important;
-        color: #e879f9 !important;
-    }
+    .stDownloadButton > button { background: #252542 !important; border: 1px solid #e879f9 !important; color: #e879f9 !important; }
 </style>"""
 
 light_css = """<style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
     * { font-family: 'Inter', sans-serif !important; box-sizing: border-box; }
-
     .stApp { background: #fafafa !important; color: #1f2937 !important; }
     .block-container { padding: 2rem 3rem 6rem !important; max-width: 100% !important; }
-
     .main-header { color: #be185d !important; font-size: 2.9rem !important; font-weight: 900 !important; }
     .subtitle { color: #6b7280 !important; font-size: 1.05rem !important; margin-bottom: 1.5rem; }
-
-    .card {
-        background: white !important;
-        border: 1px solid #e5e7eb !important;
-        border-radius: 12px !important;
-        padding: 1.6rem 1.2rem !important;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.06) !important;
-        text-align: center;
-    }
-    .card:hover {
-        transform: translateY(-4px) !important;
-        box-shadow: 0 8px 24px rgba(190,24,93,0.12) !important;
-        border-color: #f9a8d4 !important;
-    }
-
+    .card { background: white !important; border: 1px solid #e5e7eb !important; border-radius: 12px !important; padding: 1.6rem 1.2rem !important; box-shadow: 0 2px 8px rgba(0,0,0,0.06) !important; text-align: center; }
+    .card:hover { transform: translateY(-4px) !important; box-shadow: 0 8px 24px rgba(190,24,93,0.12) !important; border-color: #f9a8d4 !important; }
     .metric-label { color: #be185d !important; font-size: 0.85rem !important; font-weight: 600 !important; text-transform: uppercase; }
     .metric-value { font-size: clamp(1.6rem, 4vw, 2.4rem) !important; font-weight: 800 !important; color: #1f2937 !important; }
-
-    .row-widget.stHorizontal { flex-wrap: nowrap !important; overflow-x: auto !important; gap: 1.2rem !important; }
-    [data-testid="column"] > div { min-width: 240px !important; flex-shrink: 0 !important; }
-
     .stDataFrame { background: white !important; border-radius: 12px !important; border: 1px solid #e5e7eb !important; }
     .dataframe thead th { background: #fdf2f8 !important; color: #be185d !important; font-weight: 600 !important; }
-    .dataframe tbody tr:hover { background: #fdf2f8 !important; }
-    .dataframe tbody td { color: #1f2937 !important; }
-
     [data-testid="stSidebar"] { background: #ffffff !important; border-right: 1px solid #e5e7eb !important; }
     [data-testid="stSidebar"] * { color: #1f2937 !important; }
     [data-testid="stSidebar"] .stMarkdown h3 { color: #be185d !important; }
-    
-    button[kind="primary"], .stButton > button { 
-        background: linear-gradient(135deg, #be185d, #ec4899) !important; 
-        color: white !important;
-        border: none !important;
-        border-radius: 8px !important;
-    }
-    
-    .stSelectbox > div > div { background: white !important; border-color: #d1d5db !important; color: #1f2937 !important; }
-    .stMultiSelect > div > div { background: white !important; border-color: #d1d5db !important; color: #1f2937 !important; }
-    .stTextInput > div > div > input { background: white !important; border-color: #d1d5db !important; color: #1f2937 !important; }
-    
+    button[kind="primary"], .stButton > button { background: linear-gradient(135deg, #be185d, #ec4899) !important; color: white !important; border: none !important; border-radius: 8px !important; }
+    .stSelectbox > div > div, .stMultiSelect > div > div, .stTextInput > div > div > input { background: white !important; border-color: #d1d5db !important; color: #1f2937 !important; }
     .stSelectbox label, .stMultiSelect label, .stTextInput label { color: #4b5563 !important; font-weight: 500 !important; }
-    
-    .streamlit-expanderHeader { background: white !important; border: 1px solid #e5e7eb !important; border-radius: 8px !important; }
-    .streamlit-expanderContent { background: #fafafa !important; }
-    
     .stTabs [data-baseweb="tab-list"] { background: white !important; border: 1px solid #e5e7eb; border-radius: 8px; }
-    .stTabs [data-baseweb="tab"] { color: #6b7280 !important; }
     .stTabs [aria-selected="true"] { background: linear-gradient(135deg, #be185d, #ec4899) !important; color: white !important; border-radius: 6px; }
-    
     .stMarkdown p, .stMarkdown li { color: #1f2937 !important; }
     .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 { color: #be185d !important; }
-    
-    .stDownloadButton > button {
-        background: white !important;
-        border: 1px solid #be185d !important;
-        color: #be185d !important;
-    }
+    .stDownloadButton > button { background: white !important; border: 1px solid #be185d !important; color: #be185d !important; }
 </style>"""
 
 if st.session_state.dark_mode:
@@ -515,7 +333,7 @@ def format_number(value):
         if pd.isna(value) or float(value) == 0:
             return "0"
         return f"{int(round(float(value))):,}".replace(",", ".")
-    except Exception:
+    except:
         return "0"
 
 def format_currency(value):
@@ -530,7 +348,7 @@ def format_currency(value):
             decimal = 0
         entero_fmt = f"{entero:,}".replace(",", ".")
         return f"$ {entero_fmt},{decimal:02d}"
-    except Exception:
+    except:
         return "$ 0,00"
 
 def format_percent(value):
@@ -538,7 +356,7 @@ def format_percent(value):
         if pd.isna(value):
             return "0,0%"
         return f"{float(value):.1f}%".replace(".", ",")
-    except Exception:
+    except:
         return "0,0%"
 
 # ==========================================================================
@@ -547,26 +365,10 @@ def format_percent(value):
 def to_excel(df):
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        wb = writer.book
-        if 'Reporte' not in wb.sheetnames:
-            wb.create_sheet('Reporte')
-        ws = wb['Reporte']
-        ws.sheet_state = 'visible'
-
         if df is None or getattr(df, 'empty', False):
-            ws.append(["Sin datos"])
+            pd.DataFrame(["Sin datos"]).to_excel(writer, index=False, sheet_name='Reporte')
         else:
-            max_rows = 1048576
-            total_rows = len(df)
-            if total_rows <= max_rows:
-                df.to_excel(writer, index=False, sheet_name='Reporte')
-            else:
-                chunks = (total_rows // max_rows) + 1
-                for i in range(chunks):
-                    start = i * max_rows
-                    end = min((i + 1) * max_rows, total_rows)
-                    sheet_name = f"Reporte_{i+1}"
-                    df.iloc[start:end].to_excel(writer, index=False, sheet_name=sheet_name)
+            df.to_excel(writer, index=False, sheet_name='Reporte')
     output.seek(0)
     return output
 
@@ -575,12 +377,10 @@ def to_excel(df):
 # ==========================================================================
 @st.cache_resource
 def inicializar_duckdb(_df_movimientos):
-    """Crea la conexión DuckDB con los datos precargados"""
     con = duckdb.connect(database=":memory:")
     con.register('movimientos', _df_movimientos)
     return con
 
-# Usar datos precargados
 con = inicializar_duckdb(st.session_state.df_movimientos)
 
 @st.cache_data(ttl=3600)
@@ -634,22 +434,13 @@ def get_ventas_filtradas(fecha_desde_str, fecha_hasta_str, tiendas_tuple):
     tiendas_sql = sql_in_list_str(tiendas_sel)
     sql = f"""
         SELECT
-            Fecha,
-            Tienda,
-            CAST(Codigo AS VARCHAR) AS Codigo,
-            Descripcion,
-            Tipo_Movimiento,
-            Cantidad,
-            Costo,
-            Precio_Venta,
-            Proveedor,
+            Fecha, Tienda, CAST(Codigo AS VARCHAR) AS Codigo, Descripcion,
+            Tipo_Movimiento, Cantidad, Costo, Precio_Venta, Proveedor,
             Precio_Venta AS Venta_Total,
             (Cantidad * Costo) AS Costo_Total,
             (Precio_Venta - (Cantidad * Costo)) AS Margen,
-            CASE
-                WHEN Precio_Venta IS NULL OR Precio_Venta = 0 THEN 0
-                ELSE ((Precio_Venta - (Cantidad * Costo)) / Precio_Venta) * 100
-            END AS Margen_Pct
+            CASE WHEN Precio_Venta IS NULL OR Precio_Venta = 0 THEN 0
+                 ELSE ((Precio_Venta - (Cantidad * Costo)) / Precio_Venta) * 100 END AS Margen_Pct
         FROM movimientos
         WHERE Tipo_Movimiento = 'Venta'
           AND Fecha >= '{fecha_desde_str}' AND Fecha <= '{fecha_hasta_str}'
@@ -663,29 +454,16 @@ def get_ventas_filtradas(fecha_desde_str, fecha_hasta_str, tiendas_tuple):
 def get_todos_filtrados(fecha_desde_str, fecha_hasta_str, tiendas_tuple):
     tiendas_sel = list(tiendas_tuple)
     tiendas_sql = sql_in_list_str(tiendas_sel)
-    cols = [
-        "Fecha",
-        "Tienda",
-        "CAST(Codigo AS VARCHAR) AS Codigo",
-        "Descripcion",
-        "Tipo_Movimiento",
-        "Cantidad",
-        "Costo",
-        "Proveedor"
-    ]
-
+    cols = ["Fecha", "Tienda", "CAST(Codigo AS VARCHAR) AS Codigo", "Descripcion", "Tipo_Movimiento", "Cantidad", "Costo", "Proveedor"]
     if has_col("Tienda_Origen"):
         cols.append("Tienda_Origen")
     if has_col("Tienda_Destino"):
         cols.append("Tienda_Destino")
-
     if has_col("Numero_Documento"):
         cols.append("Numero_Documento")
-    cols_sql = ",\n ".join(cols)
+    cols_sql = ", ".join(cols)
     sql = f"""
-        SELECT
-            {cols_sql},
-            (Cantidad * Costo) AS Costo_Total
+        SELECT {cols_sql}, (Cantidad * Costo) AS Costo_Total
         FROM movimientos
         WHERE Fecha >= '{fecha_desde_str}' AND Fecha <= '{fecha_hasta_str}'
           AND Tienda IN ({tiendas_sql})
@@ -694,7 +472,6 @@ def get_todos_filtrados(fecha_desde_str, fecha_hasta_str, tiendas_tuple):
     df = con.execute(sql).df()
     df["Fecha"] = pd.to_datetime(df["Fecha"])
     return df
-
 
 # ============================================================================
 # SIDEBAR

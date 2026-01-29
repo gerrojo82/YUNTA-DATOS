@@ -1,14 +1,31 @@
 import streamlit as st
+import duckdb
+import pandas as pd
+from datetime import datetime
+
+# ============================================================================
+# CONFIGURACIÓN
+# ============================================================================
+st.set_page_config(
+    page_title="YUNTA Intelligence",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
 from io import BytesIO
 import duckdb
 from pathlib import Path
+import requests
 import json
+import tempfile
 
 # ============================================================================
-# CONFIGURACIÓN
+# CONFIGURACIÓN INICIAL
 # ============================================================================
 st.set_page_config(
     page_title="YUNTA Intelligence",
@@ -24,12 +41,12 @@ BASE_DIR = Path(__file__).resolve().parent
 
 @st.cache_resource(show_spinner=False)
 def precargar_movimientos():
-    """Carga los datos de movimientos"""
-    
+    """Carga los datos de movimientos (local o dividido en repo)"""
     # Ruta local (desarrollo)
     ruta_local = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\MOVIMIENTOS_STOCK_PowerBI.parquet")
     
     if ruta_local.exists():
+        st.info("Modo local: cargando desde archivo completo en PC")
         return pd.read_parquet(ruta_local)
     
     # Ruta en el repo (producción) - 3 partes
@@ -37,24 +54,30 @@ def precargar_movimientos():
     for i in range(1, 4):
         ruta_parte = BASE_DIR / f"MOVIMIENTOS_PARTE_{i}.parquet"
         if ruta_parte.exists():
+            st.info(f"Cargando parte {i} del repo")
             partes.append(pd.read_parquet(ruta_parte))
+        else:
+            st.warning(f"No se encontró MOVIMIENTOS_PARTE_{i}.parquet en el repo")
     
     if partes:
-        return pd.concat(partes, ignore_index=True)
+        df = pd.concat(partes, ignore_index=True)
+        st.success(f"Movimientos cargados desde {len(partes)} partes")
+        return df
     
-    raise FileNotFoundError("No se encontraron los archivos de movimientos")
+    raise FileNotFoundError("No se encontraron los archivos de movimientos ni local ni en el repo")
 
 @st.cache_resource(show_spinner=False)
 def precargar_consolidado():
-    """Carga el archivo de seguimiento"""
-    
+    """Carga el archivo de consolidado/seguimiento"""
     ruta_local = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\pages\CONSOLIDADO_COMPLETO.parquet")
     
     if ruta_local.exists():
+        st.info("Modo local: cargando consolidado desde PC")
         return pd.read_parquet(ruta_local)
     
     ruta_repo = BASE_DIR / "CONSOLIDADO_COMPLETO.parquet"
     if ruta_repo.exists():
+        st.info("Cargando consolidado desde repo")
         return pd.read_parquet(ruta_repo)
     
     raise FileNotFoundError("No se encontró el archivo consolidado")
@@ -63,15 +86,19 @@ def precargar_consolidado():
 # CARGAR DATOS AL INICIO
 # ============================================================================
 if "datos_precargados" not in st.session_state:
-    with st.spinner("📥 Cargando datos..."):
-        st.session_state.df_movimientos = precargar_movimientos()
-        st.session_state.df_consolidado = precargar_consolidado()
-        st.session_state.datos_precargados = True
+    with st.spinner("📥 Cargando datos... (puede tardar la primera vez)"):
+        try:
+            st.session_state.df_movimientos = precargar_movimientos()
+            st.session_state.df_consolidado = precargar_consolidado()
+            st.session_state.datos_precargados = True
+            st.success("Datos precargados exitosamente")
+        except Exception as e:
+            st.error(f"Error al precargar datos: {str(e)}")
+            st.stop()
 
 # ============================================================================
 # 🔐 MÓDULO DE LOGIN
 # ============================================================================
-
 def get_usuarios():
     """Obtiene usuarios desde JSON o Streamlit Secrets"""
     json_path = Path("usuarios.json")
@@ -91,9 +118,10 @@ def get_usuarios():
                     "pantallas": list(user_data["pantallas"])
                 }
             return usuarios
-    except FileNotFoundError:
+    except Exception:
         pass
     
+    # Usuarios por defecto
     return {
         "admin": {
             "password": "admin123",
@@ -374,7 +402,7 @@ def to_excel(df):
 
 # ==========================================================================
 # INICIALIZAR DUCKDB CON DATOS PRECARGADOS
-# ==========================================================================
+# ============================================================================
 @st.cache_resource
 def inicializar_duckdb(_df_movimientos):
     con = duckdb.connect(database=":memory:")
@@ -472,7 +500,6 @@ def get_todos_filtrados(fecha_desde_str, fecha_hasta_str, tiendas_tuple):
     df = con.execute(sql).df()
     df["Fecha"] = pd.to_datetime(df["Fecha"])
     return df
-
 # ============================================================================
 # SIDEBAR
 # ============================================================================

@@ -1,19 +1,4 @@
 import streamlit as st
-import duckdb
-import pandas as pd
-from datetime import datetime
-
-# ============================================================================
-# CONFIGURACIÓN
-# ============================================================================
-st.set_page_config(
-    page_title="YUNTA Intelligence",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
@@ -22,7 +7,6 @@ import duckdb
 from pathlib import Path
 import requests
 import json
-import tempfile
 
 # ============================================================================
 # CONFIGURACIÓN INICIAL
@@ -35,66 +19,42 @@ st.set_page_config(
 )
 
 # ============================================================================
-# CARGAR DATOS DESDE EL REPOSITORIO
+# DUCKDB REMOTO DIRECTO - CARGA RÁPIDA SIN CONSUMIR MEMORIA AL INICIO
 # ============================================================================
-BASE_DIR = Path(__file__).resolve().parent
+@st.cache_resource(show_spinner="Conectando a datos remotos (rápido)...")
+def get_duckdb_conn():
+    try:
+        con = duckdb.connect(database=':memory:')
+        
+        # Instala extensión para leer archivos remotos desde GitHub
+        con.execute("INSTALL httpfs;")
+        con.execute("LOAD httpfs;")
+        
+        # Vista principal: une las 3 partes automáticamente
+        con.execute("""
+            CREATE VIEW movimientos AS
+            SELECT * FROM read_parquet([
+                'https://raw.githubusercontent.com/gerrojo82/YUNTA-DATOS/main/MOVIMIENTOS_PARTE_1.parquet',
+                'https://raw.githubusercontent.com/gerrojo82/YUNTA-DATOS/main/MOVIMIENTOS_PARTE_2.parquet',
+                'https://raw.githubusercontent.com/gerrojo82/YUNTA-DATOS/main/MOVIMIENTOS_PARTE_3.parquet'
+            ])
+        """)
+        
+        # Vista para consolidado/seguimiento (archivo separado)
+        con.execute("""
+            CREATE VIEW consolidado AS
+            SELECT * FROM read_parquet('https://raw.githubusercontent.com/gerrojo82/YUNTA-DATOS/main/CONSOLIDADO_COMPLETO.parquet')
+        """)
+        
+        st.success("Conexión a datos remotos establecida")
+        return con
+    
+    except Exception as e:
+        st.error(f"Error al conectar con DuckDB remoto: {str(e)}")
+        st.info("Verifica que los archivos existan en GitHub y las URLs sean correctas.")
+        st.stop()
 
-@st.cache_resource(show_spinner=False)
-def precargar_movimientos():
-    """Carga los datos de movimientos (local o dividido en repo)"""
-    # Ruta local (desarrollo)
-    ruta_local = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\MOVIMIENTOS_STOCK_PowerBI.parquet")
-    
-    if ruta_local.exists():
-        st.info("Modo local: cargando desde archivo completo en PC")
-        return pd.read_parquet(ruta_local)
-    
-    # Ruta en el repo (producción) - 3 partes
-    partes = []
-    for i in range(1, 4):
-        ruta_parte = BASE_DIR / f"MOVIMIENTOS_PARTE_{i}.parquet"
-        if ruta_parte.exists():
-            st.info(f"Cargando parte {i} del repo")
-            partes.append(pd.read_parquet(ruta_parte))
-        else:
-            st.warning(f"No se encontró MOVIMIENTOS_PARTE_{i}.parquet en el repo")
-    
-    if partes:
-        df = pd.concat(partes, ignore_index=True)
-        st.success(f"Movimientos cargados desde {len(partes)} partes")
-        return df
-    
-    raise FileNotFoundError("No se encontraron los archivos de movimientos ni local ni en el repo")
-
-@st.cache_resource(show_spinner=False)
-def precargar_consolidado():
-    """Carga el archivo de consolidado/seguimiento"""
-    ruta_local = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\pages\CONSOLIDADO_COMPLETO.parquet")
-    
-    if ruta_local.exists():
-        st.info("Modo local: cargando consolidado desde PC")
-        return pd.read_parquet(ruta_local)
-    
-    ruta_repo = BASE_DIR / "CONSOLIDADO_COMPLETO.parquet"
-    if ruta_repo.exists():
-        st.info("Cargando consolidado desde repo")
-        return pd.read_parquet(ruta_repo)
-    
-    raise FileNotFoundError("No se encontró el archivo consolidado")
-
-# ============================================================================
-# CARGAR DATOS AL INICIO
-# ============================================================================
-if "datos_precargados" not in st.session_state:
-    with st.spinner("📥 Cargando datos... (puede tardar la primera vez)"):
-        try:
-            st.session_state.df_movimientos = precargar_movimientos()
-            st.session_state.df_consolidado = precargar_consolidado()
-            st.session_state.datos_precargados = True
-            st.success("Datos precargados exitosamente")
-        except Exception as e:
-            st.error(f"Error al precargar datos: {str(e)}")
-            st.stop()
+con = get_duckdb_conn()
 
 # ============================================================================
 # 🔐 MÓDULO DE LOGIN
@@ -121,7 +81,6 @@ def get_usuarios():
     except Exception:
         pass
     
-    # Usuarios por defecto
     return {
         "admin": {
             "password": "admin123",
@@ -401,16 +360,8 @@ def to_excel(df):
     return output
 
 # ==========================================================================
-# INICIALIZAR DUCKDB CON DATOS PRECARGADOS
+# FUNCIONES AUXILIARES Y METADATA
 # ============================================================================
-@st.cache_resource
-def inicializar_duckdb(_df_movimientos):
-    con = duckdb.connect(database=":memory:")
-    con.register('movimientos', _df_movimientos)
-    return con
-
-con = inicializar_duckdb(st.session_state.df_movimientos)
-
 @st.cache_data(ttl=3600)
 def get_schema_cols():
     df = con.execute("DESCRIBE SELECT * FROM movimientos").df()

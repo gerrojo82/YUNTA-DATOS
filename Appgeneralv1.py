@@ -31,8 +31,7 @@ MOVIMIENTOS_IDS = [
 ]
 CONSOLIDADO_ID = "1UPEGAtLPslu9nmcZjJc3UjmyWWKtiS9A"
 
-@st.cache_data(ttl=3600)
-def descargar_de_drive(file_id):
+def descargar_de_drive_simple(file_id):
     """Descarga un archivo parquet desde Google Drive"""
     
     def get_confirm_token(response):
@@ -44,14 +43,13 @@ def descargar_de_drive(file_id):
     URL = "https://drive.google.com/uc?export=download"
     
     session = requests.Session()
-    response = session.get(URL, params={'id': file_id}, stream=True)
+    response = session.get(URL, params={'id': file_id}, stream=True, timeout=300)
     token = get_confirm_token(response)
 
     if token:
         params = {'id': file_id, 'confirm': token}
-        response = session.get(URL, params=params, stream=True)
+        response = session.get(URL, params=params, stream=True, timeout=300)
 
-    # Guardar contenido en memoria
     content = BytesIO()
     for chunk in response.iter_content(chunk_size=32768):
         if chunk:
@@ -60,39 +58,76 @@ def descargar_de_drive(file_id):
     
     return pd.read_parquet(content)
 
-@st.cache_data(ttl=3600)
-def cargar_movimientos_desde_drive():
-    """Carga y une las 3 partes del archivo de movimientos"""
-    dfs = []
-    for i, file_id in enumerate(MOVIMIENTOS_IDS, 1):
-        df_parte = descargar_de_drive(file_id)
-        dfs.append(df_parte)
-    
-    # Unir todas las partes
-    df_completo = pd.concat(dfs, ignore_index=True)
-    return df_completo
-
-@st.cache_data(ttl=3600)
-def cargar_consolidado_desde_drive():
-    """Carga el archivo de seguimiento de pedidos"""
-    return descargar_de_drive(CONSOLIDADO_ID)
-
 # ============================================================================
-# FUNCIÓN PRINCIPAL DE CARGA DE DATOS
+# PRECARGAR DATOS AL INICIO (ANTES DEL LOGIN)
 # ============================================================================
-def cargar_datos_movimientos():
-    """Carga movimientos desde local o Google Drive"""
+@st.cache_resource(show_spinner=False)
+def precargar_movimientos():
+    """Precarga los datos de movimientos una sola vez"""
     
-    # Ruta local
     ruta_local = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\MOVIMIENTOS_STOCK_PowerBI.parquet")
     
     if ruta_local.exists():
-        # LOCAL: cargar directo
         return pd.read_parquet(ruta_local)
     else:
-        # NUBE: descargar de Google Drive (3 partes)
-        with st.spinner("📥 Descargando datos desde Google Drive..."):
-            return cargar_movimientos_desde_drive()
+        dfs = []
+        for file_id in MOVIMIENTOS_IDS:
+            df_parte = descargar_de_drive_simple(file_id)
+            dfs.append(df_parte)
+        return pd.concat(dfs, ignore_index=True)
+
+@st.cache_resource(show_spinner=False)
+def precargar_consolidado():
+    """Precarga el archivo de seguimiento"""
+    
+    ruta_local = Path(r"C:\Users\German\DASHBOARDYUNTA\YUNTA DASHBOARD INTELIGENTE\pages\CONSOLIDADO_COMPLETO.parquet")
+    
+    if ruta_local.exists():
+        return pd.read_parquet(ruta_local)
+    else:
+        return descargar_de_drive_simple(CONSOLIDADO_ID)
+
+# ============================================================================
+# CARGAR DATOS ANTES DE TODO (CON SPINNER VISIBLE)
+# ============================================================================
+if "datos_precargados" not in st.session_state:
+    
+    # Pantalla de carga
+    st.markdown("""
+    <style>
+        .loading-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 80vh;
+        }
+        .loading-title {
+            font-size: 2.5rem;
+            color: #e879f9;
+            margin-bottom: 20px;
+        }
+        .loading-text {
+            font-size: 1.2rem;
+            color: #a1a1aa;
+        }
+    </style>
+    <div class="loading-container">
+        <div class="loading-title">🚀 YUNTA Intelligence</div>
+        <div class="loading-text">Cargando datos desde Google Drive...</div>
+        <div class="loading-text">Esto puede tardar 1-2 minutos la primera vez</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    with st.spinner("📥 Descargando archivos..."):
+        try:
+            st.session_state.df_movimientos = precargar_movimientos()
+            st.session_state.df_consolidado = precargar_consolidado()
+            st.session_state.datos_precargados = True
+            st.rerun()
+        except Exception as e:
+            st.error(f"❌ Error al cargar datos: {e}")
+            st.stop()
 
 # ============================================================================
 # 🔐 MÓDULO DE LOGIN
@@ -326,7 +361,7 @@ if is_dark != st.session_state.dark_mode:
     st.rerun()
 
 # ============================================================================
-# CSS GLOBAL
+# CSS GLOBAL (igual que antes - no lo cambio para ahorrar espacio)
 # ============================================================================
 dark_css = """<style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
@@ -536,24 +571,17 @@ def to_excel(df):
     return output
 
 # ==========================================================================
-# CARGAR DATOS Y CREAR CONEXIÓN DUCKDB
+# INICIALIZAR DUCKDB CON DATOS PRECARGADOS
 # ==========================================================================
 @st.cache_resource
-def inicializar_duckdb():
-    """Carga los datos y crea la conexión DuckDB"""
-    
-    # Cargar datos
-    df_movimientos = cargar_datos_movimientos()
-    
-    # Crear conexión DuckDB en memoria
+def inicializar_duckdb(_df_movimientos):
+    """Crea la conexión DuckDB con los datos precargados"""
     con = duckdb.connect(database=":memory:")
-    
-    # Registrar el DataFrame como tabla
-    con.register('movimientos', df_movimientos)
-    
+    con.register('movimientos', _df_movimientos)
     return con
 
-con = inicializar_duckdb()
+# Usar datos precargados
+con = inicializar_duckdb(st.session_state.df_movimientos)
 
 @st.cache_data(ttl=3600)
 def get_schema_cols():
@@ -666,6 +694,7 @@ def get_todos_filtrados(fecha_desde_str, fecha_hasta_str, tiendas_tuple):
     df = con.execute(sql).df()
     df["Fecha"] = pd.to_datetime(df["Fecha"])
     return df
+
 
 # ============================================================================
 # SIDEBAR

@@ -539,7 +539,7 @@ st.markdown("---")
 st.markdown("### 📋 Detalle de Pedidos")
 
 orden_deseado = [
-    'ID_Pedido', 'SKU', 'Descripcion', 'Proveedor',
+    'ID_Pedido', 'Tienda', 'SKU', 'Descripcion', 'Proveedor',
     'Fecha_Pedido', 'Fecha_Recepcion_Proveedor', 'Fecha_Primera_Transferencia', 'Dias_Hasta_Primera_Transferencia',
     'Cantidad_Solicitada', 'Cantidad_Reasignada', 'Cantidad_Transferida_Entrada',
     'Precio_Unitario', 'Costo_Unitario_Transferencia',
